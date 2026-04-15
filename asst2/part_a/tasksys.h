@@ -5,6 +5,7 @@
 #include <thread>
 #include <queue>
 #include <condition_variable>
+#include <shared_mutex>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -70,19 +71,19 @@ public:
     WorkQueue() = default;
     void InQueueTask(TaskDescription& taskdes)
     {
-        std::lock_guard<std::mutex> lockGuard(m_lock);
+        // std::lock_guard<std::mutex> lockGuard(m_lock);
         m_queue.push(taskdes);
     }
 
     void DeQueueTask()
     {
-        std::lock_guard<std::mutex> lockGuard(m_lock);
+        // std::lock_guard<std::mutex> lockGuard(m_lock);
         m_queue.pop();
     }
 
     TaskDescription& Front()
     {
-        std::lock_guard<std::mutex> lockGuard(m_lock);
+        // std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.front();
     }
 
@@ -92,7 +93,7 @@ public:
     }
     bool IsEmpty() 
     {
-        std::lock_guard<std::mutex> lockGuard(m_lock);
+        // std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.empty();
     }
 
@@ -106,6 +107,13 @@ struct EndSignal
     EndSignal(): m_endSignalLock(), m_endSignalCV(){}
     std::mutex m_endSignalLock;
     std::condition_variable m_endSignalCV;
+};
+
+struct StartRunSignal
+{
+    StartRunSignal(): m_startRunSignalLock(), m_startRun(false) {}
+    std::mutex m_startRunSignalLock;
+    bool m_startRun;
 };
 
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
@@ -124,6 +132,8 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         
         EndSignal m_endSig;
         bool m_killed;
+        // bool m_startRun;
+        StartRunSignal m_startRunSignal;
 };
 
 /*

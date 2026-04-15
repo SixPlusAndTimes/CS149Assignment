@@ -147,11 +147,31 @@ void DoWork(int index, WorkQueue& workQueue,  EndSignal& endSignal)
     }
 }
 
-void TaskSystemParallelThreadPoolSpinningWorker(int index, WorkQueue& workQueue, EndSignal& endSignal, bool& killed)
+void TaskSystemParallelThreadPoolSpinningWorker(int index, WorkQueue& workQueue, EndSignal& endSignal, bool& killed, StartRunSignal& startRun)
 {
     while (true)
     {
-        if (killed) break;
+        if (killed)
+        {
+            break;
+        } 
+
+        {
+            startRun.m_startRunSignalLock.lock();
+            // std::lock_guard<std::mutex> lockGuard(startRun.m_startRunSignalLock);
+            if (startRun.m_startRun == false)
+            {
+                startRun.m_startRunSignalLock.unlock();
+                continue;
+            }
+            // printf("start to run threadid %d \n ", index);
+            startRun.m_startRunSignalLock.unlock();
+        }
+
+        // if (index == 1)
+        // {
+            // printf("start to run threadid %d \n", index);
+        // }
         DoWork(index, workQueue, endSignal);
     }
 }
@@ -165,7 +185,7 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 {
     for (size_t i = 0; i < m_threads.size(); i++)
     {
-        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, static_cast<int>(i), std::ref(m_workQuque[i]), std::ref(m_endSig), std::ref(m_killed));
+        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, static_cast<int>(i), std::ref(m_workQuque[i]), std::ref(m_endSig), std::ref(m_killed), std::ref(m_startRunSignal));
     }
 }
 
@@ -191,9 +211,16 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
         int assignedIdx = rand() % m_num_threads; 
         TaskDescription taskDes{i, i + num_tasks_each_slice, runnable, num_total_tasks};
         m_workQuque[assignedIdx].InQueueTask(taskDes);
-        // printf("assign task %d to threadid %d\n",i, assignedIdx );
+        printf("assign task %d to threadid %d\n",i, assignedIdx );
     }
 
+    // printf("main thread dispatched all tasks\n");
+
+        m_startRunSignal.m_startRunSignalLock.lock();
+        // std::lock_guard<std::mutex> lockGuard(startRun.m_startRunSignalLock);
+        m_startRunSignal.m_startRun = true;
+        m_startRunSignal.m_startRunSignalLock.unlock();
+        // printf("all thread start to run\b");
 
     DoWork(m_num_threads - 1, m_workQuque[m_num_threads - 1], m_endSig);
 
@@ -204,6 +231,12 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
         } );
     });
     endLock.unlock();
+
+    {
+        m_startRunSignal.m_startRunSignalLock.lock();
+        m_startRunSignal.m_startRun = false;
+        m_startRunSignal.m_startRunSignalLock.unlock();
+    }
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

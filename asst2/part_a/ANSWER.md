@@ -229,7 +229,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
 }
 ~~~
 
-Test result is following, almost all test failed. Maybe because the lock operaion in WorkingQueue?
+Test result is following, almost all test failed. Maybe because the large amount of lock operaion in WorkingQueue?
 
 ~~~md
  python3  ../tests/run_test_harness.py
