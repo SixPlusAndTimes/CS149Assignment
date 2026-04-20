@@ -198,7 +198,7 @@ TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
 
-    int multipler = 4;
+    int multipler = 16;
     int num_slice = m_num_threads * multipler;
     int num_tasks_each_slice = num_total_tasks / (num_slice);
     if (num_tasks_each_slice <= 0)
@@ -211,7 +211,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
         int assignedIdx = rand() % m_num_threads; 
         TaskDescription taskDes{i, i + num_tasks_each_slice, runnable, num_total_tasks};
         m_workQuque[assignedIdx].InQueueTask(taskDes);
-        printf("assign task %d to threadid %d\n",i, assignedIdx );
+        // printf("assign task %d to threadid %d\n",i, assignedIdx );
     }
 
     // printf("main thread dispatched all tasks\n");
