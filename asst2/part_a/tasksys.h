@@ -102,18 +102,18 @@ private:
     std::mutex m_lock;
 };
 
-struct EndSignal
-{
-    EndSignal(): m_endSignalLock(), m_endSignalCV(){}
-    std::mutex m_endSignalLock;
-    std::condition_variable m_endSignalCV;
-};
 
-struct StartRunSignal
+class TaskState
 {
-    StartRunSignal(): m_startRunSignalLock(), m_startRun(false) {}
-    std::mutex m_startRunSignalLock;
-    bool m_startRun;
+public:
+    TaskState(){};
+    int         m_total_num;
+    int         m_currentIdx;
+    int         m_left_num;
+    IRunnable*  m_runable;
+    std::mutex  m_lockWorking;
+    std::mutex  m_lockFinished;
+    std::condition_variable m_cv_finished;
 };
 
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
@@ -125,15 +125,11 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        bool m_killed;
+        TaskState m_taskState;
     private:
         std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
-        int m_num_threads;
-        std::vector<WorkQueue> m_workQuque;
-        
-        EndSignal m_endSig;
-        bool m_killed;
-        // bool m_startRun;
-        StartRunSignal m_startRunSignal;
+        int  m_num_threads;
 };
 
 /*
