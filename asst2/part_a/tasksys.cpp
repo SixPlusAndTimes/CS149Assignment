@@ -136,17 +136,16 @@ void DoWork(int index, WorkQueue& workQueue, TaskSystemParallelThreadPoolSpinnin
         {
             printf("thread idx %d task [%d, %d) starttorun\n", index, taskDes.assign_from, taskDes.assign_to);
             taskDes.runnable->runTask(i, taskDes.num_total_tasks);
+            int doneNum = taskDes.assign_to - taskDes.assign_from;
+            taskSystem->m_taskState.m_RemainingTask.fetch_sub(doneNum, std::memory_order_release);
             printf("thread idx %d task [%d, %d) completed\n", index, taskDes.assign_from, taskDes.assign_to);
         }
-        int doneNum = taskDes.assign_to - taskDes.assign_from;
-        // workQueue.DeQueueTask();
-        taskSystem->m_taskState.m_RemainingTask.fetch_sub(doneNum, std::memory_order_release);
     }
 
     while (taskSystem->m_taskState.m_RemainingTask.load(std::memory_order_acquire) > 0) {
         printf("thread idx %d taskSystem->m_taskState.m_RemainingTask %d\n", index, taskSystem->m_taskState.m_RemainingTask.load());
     }
-    printf("thread idx %d taskSystem->m_taskState.m_RemainingTask %d\n", index, taskSystem->m_taskState.m_RemainingTask.load());
+    printf("DoworkReturn thread idx %d taskSystem->m_taskState.m_RemainingTask %d\n", index, taskSystem->m_taskState.m_RemainingTask.load());
 }
 
 void TaskSystemParallelThreadPoolSpinningWorker(int index, WorkQueue& workQueue, TaskSystemParallelThreadPoolSpinning* taskSystem)
