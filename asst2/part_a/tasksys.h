@@ -6,6 +6,7 @@
 #include <queue>
 #include <condition_variable>
 #include <shared_mutex>
+#include <atomic>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -75,10 +76,12 @@ public:
         m_queue.push(taskdes);
     }
 
-    void DeQueueTask()
+    TaskDescription DeQueueTask()
     {
         // std::lock_guard<std::mutex> lockGuard(m_lock);
+        TaskDescription ret = m_queue.front();
         m_queue.pop();
+        return ret;
     }
 
     TaskDescription& Front()
@@ -102,11 +105,19 @@ private:
     std::mutex m_lock;
 };
 
+class TaskState
+{
+public:
+    std::atomic<bool> m_isStartProcess;
 struct EndSignal
 {
     EndSignal(): m_endSignalLock(), m_endSignalCV(){}
     std::mutex m_endSignalLock;
     std::condition_variable m_endSignalCV;
+};
+
+    EndSignal m_endSignal;;
+    std::atomic<int> m_RemainingTask;
 };
 
 struct StartRunSignal
@@ -125,15 +136,14 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        TaskState m_taskState;
+        bool m_killed;
     private:
         std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
         int m_num_threads;
         std::vector<WorkQueue> m_workQuque;
         
-        EndSignal m_endSig;
-        bool m_killed;
         // bool m_startRun;
-        StartRunSignal m_startRunSignal;
 };
 
 /*
