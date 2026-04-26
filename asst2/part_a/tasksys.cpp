@@ -77,7 +77,7 @@ void TaskSystemParallelSpawnThreadWorker(int thread_index, IRunnable* runnable, 
 }
 
 void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
-    int multipler = 8;
+    int multipler = 16;
     int num_slice = m_num_threads * multipler;
     int num_tasks_each_slice = num_total_tasks / (num_slice);
     if (num_tasks_each_slice <= 0)
@@ -125,89 +125,113 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
     return "Parallel + Thread Pool + Spin";
 }
 
-void TaskSystemParallelThreadPoolSpinningWorker(int threadidx, TaskSystemParallelThreadPoolSpinning* taskSysSpiningPool)
+void DoWork(int index, TaskSystemParallelThreadPoolSpinning* taskSystem)
 {
-    TaskState& state = taskSysSpiningPool->m_taskState;
+    TaskDescription taskDes;
+    bool doSelf = taskSystem->m_workQuque[index].DeQueueTask(taskDes);
+    if (!doSelf)
+    {
+        // steal from others
+        for (int stolenIdx = (index + 1) % (taskSystem->m_workQuque.size()); 
+            stolenIdx != index; 
+            stolenIdx = (stolenIdx + 1) % (taskSystem->m_workQuque.size()))
+        {
+            if (taskSystem->m_workQuque[stolenIdx].DeQueueTask(taskDes))
+            {
+                // printf("thread idx %d steal from %d [%d %d)\n", index, stolenIdx, taskDes.assign_from, taskDes.assign_to);
+                break;
+            }
+        }
+    }
+
+    if (taskDes.runnable)
+    {
+        for (int i = taskDes.assign_from; i < taskDes.assign_to; i++)
+        {
+            // printf("thread idx %d task [%d, %d) starttorun\n", index, taskDes.assign_from, taskDes.assign_to);
+            taskDes.runnable->runTask(i, taskDes.num_total_tasks);
+        }
+        int doneNum = taskDes.assign_to - taskDes.assign_from;
+        taskSystem->m_taskState.m_RemainingTask.fetch_sub(doneNum, std::memory_order_seq_cst);
+        // printf("thread idx %d task [%d, %d) completed\n", index, taskDes.assign_from, taskDes.assign_to);
+    }
+
+}
+
+void TaskSystemParallelThreadPoolSpinningWorker(int index, TaskSystemParallelThreadPoolSpinning* taskSystem)
+{
     // printf("threadidx %d enter SpiningWorker\n", threadidx);
     while (true)
     {
-        if (taskSysSpiningPool->m_killed)
+        if (taskSystem->m_taskState.m_killed.load(std::memory_order_acquire))
         {
             break;
         } 
-        state.m_lockWorking.lock(); 
-        if (state.m_currentIdx != -1 && state.m_currentIdx < state.m_total_num)
-        {
-            int runID = state.m_currentIdx++;
-            int total = state.m_total_num;
-            IRunnable* runable = state.m_runable;
-            state.m_lockWorking.unlock(); 
-                // printf("threaidx %d should run taskid %d total %d\n",threadidx, runID, total);
-                runable->runTask(runID, total);
 
-
-            state.m_lockFinished.lock(); 
-            state.m_left_num--;
-            if (state.m_left_num == 0)
-            {
-                // printf("threaidx %d run taskid %d done, notify main thread\n",threadidx, runID);
-                state.m_cv_finished.notify_all();
-            }
-            state.m_lockFinished.unlock(); 
-        }
-        else 
-        {
-            state.m_lockWorking.unlock();
-            continue;
-        }
-
+        DoWork(index, taskSystem);
     }
 }
 
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): 
     ITaskSystem(num_threads), 
-    m_killed(false),
     m_taskState(),
+    m_workQuque(num_threads),
     m_threads(num_threads - 1), 
     m_num_threads(num_threads)
 {
-    m_taskState.m_runable = nullptr;
-    m_taskState.m_total_num = 0;
-    m_taskState.m_left_num = 0;
-    m_taskState.m_currentIdx = -1;
+    // printf("parallel thread pool spining start init\n");
+    m_taskState.m_killed.store(false, std::memory_order_release);
+    m_taskState.m_RemainingTask.store(0, std::memory_order_release);
     for (size_t i = 0; i < m_threads.size(); i++)
     {
-        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, i, this);
+        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, static_cast<int>(i), this);
     }
     // printf("new tasksysem done\n");
 }
 
-TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() 
-{
-    m_killed = true;
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    // printf("teminate spining pool threads start\n");
+    m_taskState.m_killed.store(true, std::memory_order_release);
     for (int i = 0; i < m_num_threads - 1; i++) {
         m_threads[i].join();
     }
+    // printf("teminate spining pool threads done\n");
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) 
 {
-    // printf("num_total_tasks %d\n", num_total_tasks);
-    std::unique_lock<std::mutex> finish(m_taskState.m_lockFinished);
-    // std::unique_lock<std::mutex> working(m_taskState.m_lockWorking);
-    m_taskState.m_lockWorking.lock();
-    m_taskState.m_total_num = num_total_tasks;
-    m_taskState.m_left_num = num_total_tasks;
-    m_taskState.m_currentIdx = 0;
-    m_taskState.m_runable = runnable;
-    m_taskState.m_lockWorking.unlock();
-    // printf("main thread wait for done \n");
-    m_taskState.m_cv_finished.wait(finish);
 
-    m_taskState.m_lockWorking.lock();
-    m_taskState.m_currentIdx = -1;
-    m_taskState.m_lockWorking.unlock();
-    // printf("all tasks done\n");
+    // printf("num_total_tasks %d \n",num_total_tasks);
+    int multipler = 8;
+    int num_slice = m_num_threads * multipler;
+    int num_tasks_each_slice = num_total_tasks / (num_slice);
+    if (num_tasks_each_slice <= 0)
+    {
+        num_tasks_each_slice = 1;
+    }
+
+    m_taskState.m_RemainingTask.store(num_total_tasks, std::memory_order_release);
+    int assignedIdx = 0; 
+    for (int i = 0; i < num_total_tasks; i += num_tasks_each_slice)
+    {
+        TaskDescription taskDes{i, i + num_tasks_each_slice, runnable, num_total_tasks};
+        if (i + num_tasks_each_slice > num_total_tasks)
+        {
+            taskDes.assign_to = num_total_tasks;
+        }
+        // printf("assign task[%d-%d) to thread idx %d\n",taskDes.assign_from, taskDes.assign_to, assignedIdx);
+        m_workQuque[assignedIdx].InQueueTask(taskDes);
+        assignedIdx = (assignedIdx + 1) % m_workQuque.size();
+    }
+
+    // printf("main thread dispatched all tasks\n");
+
+    while (m_taskState.m_RemainingTask.load(std::memory_order_acquire) > 0)
+    {
+        DoWork(m_num_threads - 1, this);
+    }
+    // printf("all tasks done return run()\n");
+    
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

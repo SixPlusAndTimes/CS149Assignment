@@ -6,6 +6,7 @@
 #include <queue>
 #include <condition_variable>
 #include <shared_mutex>
+#include <atomic>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -71,29 +72,28 @@ public:
     WorkQueue() = default;
     void InQueueTask(TaskDescription& taskdes)
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         m_queue.push(taskdes);
     }
 
-    void DeQueueTask()
+    bool DeQueueTask(TaskDescription& out)
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        if (m_queue.empty()) return false;
+        out = m_queue.front();
         m_queue.pop();
+        return true;
     }
 
     TaskDescription& Front()
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.front();
     }
 
-    size_t GetSize()
-    {
-        return m_queue.size();
-    }
     bool IsEmpty() 
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.empty();
     }
 
@@ -102,18 +102,11 @@ private:
     std::mutex m_lock;
 };
 
-
 class TaskState
 {
 public:
-    TaskState(){};
-    int         m_total_num;
-    int         m_currentIdx;
-    int         m_left_num;
-    IRunnable*  m_runable;
-    std::mutex  m_lockWorking;
-    std::mutex  m_lockFinished;
-    std::condition_variable m_cv_finished;
+    std::atomic<bool> m_killed;
+    std::atomic<int> m_RemainingTask;
 };
 
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
@@ -125,11 +118,12 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
-        bool m_killed;
         TaskState m_taskState;
+        std::vector<WorkQueue> m_workQuque;
     private:
         std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
-        int  m_num_threads;
+        int m_num_threads;
+        
 };
 
 /*
