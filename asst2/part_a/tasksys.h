@@ -72,31 +72,28 @@ public:
     WorkQueue() = default;
     void InQueueTask(TaskDescription& taskdes)
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         m_queue.push(taskdes);
     }
 
-    TaskDescription DeQueueTask()
+    bool DeQueueTask(TaskDescription& out)
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
-        TaskDescription ret = m_queue.front();
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        if (m_queue.empty()) return false;
+        out = m_queue.front();
         m_queue.pop();
-        return ret;
+        return true;
     }
 
     TaskDescription& Front()
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.front();
     }
 
-    size_t GetSize()
-    {
-        return m_queue.size();
-    }
     bool IsEmpty() 
     {
-        // std::lock_guard<std::mutex> lockGuard(m_lock);
+        std::lock_guard<std::mutex> lockGuard(m_lock);
         return m_queue.empty();
     }
 
@@ -109,14 +106,7 @@ class TaskState
 {
 public:
     std::atomic<bool> m_isStartProcess;
-struct EndSignal
-{
-    EndSignal(): m_endSignalLock(), m_endSignalCV(){}
-    std::mutex m_endSignalLock;
-    std::condition_variable m_endSignalCV;
-};
-
-    EndSignal m_endSignal;;
+    std::atomic<bool> m_killed;
     std::atomic<int> m_RemainingTask;
 };
 
@@ -137,11 +127,10 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
                                 const std::vector<TaskID>& deps);
         void sync();
         TaskState m_taskState;
-        bool m_killed;
+        std::vector<WorkQueue> m_workQuque;
     private:
         std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
         int m_num_threads;
-        std::vector<WorkQueue> m_workQuque;
         
         // bool m_startRun;
 };
