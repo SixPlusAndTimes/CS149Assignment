@@ -255,54 +255,142 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
+{
+    TaskDescription taskDes;
+    bool doSelf = taskSystem->m_workQuque[index].DeQueueTask(taskDes);
+    if (!doSelf)
+    {
+        // steal from others
+        for (int stolenIdx = (index + 1) % (taskSystem->m_workQuque.size()); 
+            stolenIdx != index; 
+            stolenIdx = (stolenIdx + 1) % (taskSystem->m_workQuque.size()))
+        {
+            if (taskSystem->m_workQuque[stolenIdx].DeQueueTask(taskDes))
+            {
+                // printf("thread idx %d steal from %d [%d %d)\n", index, stolenIdx, taskDes.assign_from, taskDes.assign_to);
+                break;
+            }
+        }
+    }
+
+    if (taskDes.runnable)
+    {
+        for (int i = taskDes.assign_from; i < taskDes.assign_to; i++)
+        {
+            // printf("thread idx %d task [%d, %d) starttorun\n", index, taskDes.assign_from, taskDes.assign_to);
+            taskDes.runnable->runTask(i, taskDes.num_total_tasks);
+        }
+        int doneNum = taskDes.assign_to - taskDes.assign_from;
+        taskSystem->m_taskState.m_RemainingTask.fetch_sub(doneNum, std::memory_order_seq_cst);
+        // printf("thread idx %d task [%d, %d) completed\n", index, taskDes.assign_from, taskDes.assign_to);
+        return true;
+    }
+    return false;
+
+}
+
+void TaskSystemParallelThreadPoolSleepingWorker(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
+{
+    // printf("threadidx %d enter SpiningWorker\n", index);
+    while (true)
+    {
+        if (taskSystem->m_taskState.m_killed.load(std::memory_order_acquire))
+        {
+            break;
+        } 
+
+        if (DoWork(index, taskSystem))
+        {
+            continue;
+        }
+        else
+        {
+            // printf("threadidx %d wait for work\n", index);
+            std::unique_lock<std::mutex> lc(taskSystem->m_taskState.m_hasTaksLk);
+            // avoid sleep/notify condition when destroying the thread system
+            if (!taskSystem->m_taskState.m_killed.load(std::memory_order_acquire))
+            {
+                taskSystem->m_taskState.m_hasTaksCv.wait(lc);
+            }
+        }
+    }
+}
+
+
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads):
+    ITaskSystem(num_threads), 
+    m_taskState(),
+    m_workQuque(num_threads),
+    m_threads(num_threads - 1), 
+    m_num_threads(num_threads) 
+{
+    // printf("parallel thread pool spining start init\n");
+    m_taskState.m_killed.store(false, std::memory_order_release);
+    m_taskState.m_RemainingTask.store(0, std::memory_order_release);
+    for (size_t i = 0; i < m_threads.size(); i++)
+    {
+        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSleepingWorker, static_cast<int>(i), this);
+    }
+    // printf("new tasksysem done\n");
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+    // printf("teminate spining pool threads start\n");
+    m_taskState.m_killed.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lc(m_taskState.m_hasTaksLk);
+    m_taskState.m_hasTaksCv.notify_all();
+    lc.unlock();
+    for (int i = 0; i < m_num_threads - 1; i++) {
+        m_threads[i].join();
+    }
+    // printf("teminate spining pool threads done\n");
 }
 
-void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) 
+{
+    // printf("num_total_tasks %d \n",num_total_tasks);
+    int multipler = 8;
+    int num_slice = m_num_threads * multipler;
+    int num_tasks_each_slice = num_total_tasks / (num_slice);
+    if (num_tasks_each_slice <= 0)
+    {
+        num_tasks_each_slice = 1;
     }
+
+    m_taskState.m_RemainingTask.store(num_total_tasks, std::memory_order_release);
+    int assignedIdx = 0; 
+    for (int i = 0; i < num_total_tasks; i += num_tasks_each_slice)
+    {
+        TaskDescription taskDes{i, i + num_tasks_each_slice, runnable, num_total_tasks};
+        if (i + num_tasks_each_slice > num_total_tasks)
+        {
+            taskDes.assign_to = num_total_tasks;
+        }
+        // printf("assign task[%d-%d) to thread idx %d\n",taskDes.assign_from, taskDes.assign_to, assignedIdx);
+        m_workQuque[assignedIdx].InQueueTask(taskDes);
+        assignedIdx = (assignedIdx + 1) % m_workQuque.size();
+    }
+
+    // printf("main thread dispatched all tasks\n");
+
+    std::unique_lock<std::mutex> lc(m_taskState.m_hasTaksLk);
+    m_taskState.m_hasTaksCv.notify_all();
+    lc.unlock();
+
+    while (m_taskState.m_RemainingTask.load(std::memory_order_acquire) > 0)
+    {
+        DoWork(m_num_threads - 1, this);
+    }
+    // printf("all tasks done return run()\n");
+    
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
-
-
-    //
-    // TODO: CS149 students will implement this method in Part B.
-    //
-
     return 0;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
-
     return;
 }

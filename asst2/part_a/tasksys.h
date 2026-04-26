@@ -102,15 +102,15 @@ private:
     std::mutex m_lock;
 };
 
-class TaskState
-{
-public:
-    std::atomic<bool> m_killed;
-    std::atomic<int> m_RemainingTask;
-};
 
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
     public:
+        class TaskState
+        {
+            public:
+            std::atomic<bool> m_killed;
+            std::atomic<int> m_RemainingTask;
+        };
         TaskSystemParallelThreadPoolSpinning(int num_threads);
         ~TaskSystemParallelThreadPoolSpinning();
         const char* name();
@@ -134,6 +134,14 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     public:
+        class TaskState
+        {
+            public:
+            std::atomic<bool> m_killed;
+            std::atomic<int> m_RemainingTask;
+            std::mutex  m_hasTaksLk;
+            std::condition_variable m_hasTaksCv;
+        };
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
         const char* name();
@@ -141,6 +149,12 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        TaskState m_taskState;
+        std::vector<WorkQueue> m_workQuque;
+
+    private:
+        std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
+        int m_num_threads;
 };
 
 #endif
