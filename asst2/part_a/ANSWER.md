@@ -558,3 +558,566 @@ Overall performance results
 ~~~
 
 Obviously, implementB is faster than implementA. But why is that since implementA has less lock operation?
+
+## optimized implA
+ImplA uses static dispatch strategy which may lead to loading unbalanced. So in this implementation I try to dynamically dispatch workload.
+
+~~~c++
+class TaskDescription
+{
+public:
+    int assign_from;
+    int assign_to;
+    IRunnable* runnable;
+    int num_total_tasks;
+    TaskDescription() : assign_from(0), assign_to(0), runnable(nullptr), num_total_tasks(0) {}
+    TaskDescription(int from, int to, IRunnable* r, int total): 
+            assign_from(from), assign_to(to), runnable(r), num_total_tasks(total) {}
+};
+
+class WorkQueue
+{
+public:
+    WorkQueue() = default;
+    void InQueueTask(TaskDescription& taskdes)
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        m_queue.push(taskdes);
+    }
+
+    bool DeQueueTask(TaskDescription& out)
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        if (m_queue.empty()) return false;
+        out = m_queue.front();
+        m_queue.pop();
+        return true;
+    }
+
+    TaskDescription& Front()
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        return m_queue.front();
+    }
+
+    bool IsEmpty() 
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        return m_queue.empty();
+    }
+
+private:
+    std::queue<TaskDescription> m_queue;
+    std::mutex m_lock;
+};
+
+class TaskState
+{
+public:
+    std::atomic<bool> m_isStartProcess;
+    std::atomic<bool> m_killed;
+    std::atomic<int> m_RemainingTask;
+};
+
+class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
+    public:
+        TaskSystemParallelThreadPoolSpinning(int num_threads);
+        ~TaskSystemParallelThreadPoolSpinning();
+        const char* name();
+        void run(IRunnable* runnable, int num_total_tasks);
+        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
+                                const std::vector<TaskID>& deps);
+        void sync();
+        TaskState m_taskState;
+        std::vector<WorkQueue> m_workQuque;
+    private:
+        std::vector<std::thread> m_threads; // m_threads.size() + 1 = m_num_threads;
+        int m_num_threads;
+        
+};
+
+const char* TaskSystemParallelThreadPoolSpinning::name() {
+    return "Parallel + Thread Pool + Spin";
+}
+
+void DoWork(int index, TaskSystemParallelThreadPoolSpinning* taskSystem)
+{
+    TaskDescription taskDes;
+    bool doSelf = taskSystem->m_workQuque[index].DeQueueTask(taskDes);
+    if (!doSelf)
+    {
+        // steal from others
+        for (int stolenIdx = (index + 1) % (taskSystem->m_workQuque.size()); 
+            stolenIdx != index; 
+            stolenIdx = (stolenIdx + 1) % (taskSystem->m_workQuque.size()))
+        {
+            if (taskSystem->m_workQuque[stolenIdx].DeQueueTask(taskDes))
+            {
+                // printf("thread idx %d steal from %d [%d %d)\n", index, stolenIdx, taskDes.assign_from, taskDes.assign_to);
+                break;
+            }
+        }
+    }
+
+    if (taskDes.runnable)
+    {
+        for (int i = taskDes.assign_from; i < taskDes.assign_to; i++)
+        {
+            // printf("thread idx %d task [%d, %d) starttorun\n", index, taskDes.assign_from, taskDes.assign_to);
+            taskDes.runnable->runTask(i, taskDes.num_total_tasks);
+        }
+        int doneNum = taskDes.assign_to - taskDes.assign_from;
+        taskSystem->m_taskState.m_RemainingTask.fetch_sub(doneNum, std::memory_order_seq_cst);
+        // printf("thread idx %d task [%d, %d) completed\n", index, taskDes.assign_from, taskDes.assign_to);
+    }
+
+}
+
+void TaskSystemParallelThreadPoolSpinningWorker(int index, TaskSystemParallelThreadPoolSpinning* taskSystem)
+{
+    // printf("threadidx %d enter SpiningWorker\n", threadidx);
+    while (true)
+    {
+        if (taskSystem->m_taskState.m_killed.load(std::memory_order_acquire))
+        {
+            break;
+        } 
+
+        if (!taskSystem->m_taskState.m_isStartProcess.load(std::memory_order_acquire))
+        {
+            // printf("thread idx %d, nothing to do continue iteration\n", index);
+            continue;
+        }
+
+        DoWork(index, taskSystem);
+    }
+}
+
+TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): 
+    ITaskSystem(num_threads), 
+    m_taskState(),
+    m_workQuque(num_threads),
+    m_threads(num_threads - 1), 
+    m_num_threads(num_threads)
+{
+    // printf("parallel thread pool spining start init\n");
+    m_taskState.m_killed.store(false, std::memory_order_release);
+    m_taskState.m_isStartProcess.store(false, std::memory_order_release);
+    m_taskState.m_RemainingTask.store(0, std::memory_order_release);
+    for (size_t i = 0; i < m_threads.size(); i++)
+    {
+        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, static_cast<int>(i), this);
+    }
+    // printf("new tasksysem done\n");
+}
+
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    // printf("teminate spining pool threads start\n");
+    m_taskState.m_killed.store(true, std::memory_order_release);
+    for (int i = 0; i < m_num_threads - 1; i++) {
+        m_threads[i].join();
+    }
+    // printf("teminate spining pool threads done\n");
+}
+
+void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) 
+{
+
+    // printf("num_total_tasks %d \n",num_total_tasks);
+    int multipler = 8;
+    int num_slice = m_num_threads * multipler;
+    int num_tasks_each_slice = num_total_tasks / (num_slice);
+    if (num_tasks_each_slice <= 0)
+    {
+        num_tasks_each_slice = 1;
+    }
+
+    m_taskState.m_RemainingTask.store(num_total_tasks, std::memory_order_release);
+    int assignedIdx = 0; 
+    for (int i = 0; i < num_total_tasks; i += num_tasks_each_slice)
+    {
+        TaskDescription taskDes{i, i + num_tasks_each_slice, runnable, num_total_tasks};
+        if (i + num_tasks_each_slice > num_total_tasks)
+        {
+            taskDes.assign_to = num_total_tasks;
+        }
+        // printf("assign task[%d-%d) to thread idx %d\n",taskDes.assign_from, taskDes.assign_to, assignedIdx);
+        m_workQuque[assignedIdx].InQueueTask(taskDes);
+        assignedIdx = (assignedIdx + 1) % m_workQuque.size();
+    }
+
+    // printf("main thread dispatched all tasks\n");
+
+    m_taskState.m_isStartProcess.store(true, std::memory_order_release);
+
+    while (m_taskState.m_RemainingTask.load(std::memory_order_acquire) > 0)
+    {
+        DoWork(m_num_threads - 1, this);
+    }
+    // printf("all tasks done return run()\n");
+    m_taskState.m_isStartProcess.store(false, std::memory_order_release);
+    
+}
+
+TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
+                                                              const std::vector<TaskID>& deps) {
+    // You do not need to implement this method.
+    return 0;
+}
+
+void TaskSystemParallelThreadPoolSpinning::sync() {
+    // You do not need to implement this method.
+    return;
+}
+~~~
+
+huge accelleration for "Parallel + Thread Pool + Spin", but I dont konw why here is a fallback in "Parallel + Always Spawn".
+
+~~~md
+
+➜  part_a git:(1e2f94e) ✗ python3  ../tests/run_test_harness.py
+runtasks_ref
+Linux x86_64
+================================================================================
+Running task system grading harness... (11 total tests)
+  - Detected CPU with 8 execution contexts
+  - Task system configured to use at most 8 threads
+================================================================================
+================================================================================
+Executing test: super_super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                5.006     5.187       0.97  (OK)
+[Parallel + Always Spawn]               97.306    102.463     0.95  (OK)
+[Parallel + Thread Pool + Spin]         8.002     21.53       0.37  (OK)
+[Parallel + Thread Pool + Sleep]        6.213     40.86       0.15  (OK)
+================================================================================
+Executing test: super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                71.845    69.565      1.03  (OK)
+[Parallel + Always Spawn]               112.596   111.178     1.01  (OK)
+[Parallel + Thread Pool + Spin]         18.531    27.292      0.68  (OK)
+[Parallel + Thread Pool + Sleep]        73.138    43.498      1.68  (NOT OK)
+================================================================================
+Executing test: ping_pong_equal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_equal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1195.748  1151.752    1.04  (OK)
+[Parallel + Always Spawn]               384.008   296.967     1.29  (NOT OK)
+[Parallel + Thread Pool + Spin]         249.469   274.006     0.91  (OK)
+[Parallel + Thread Pool + Sleep]        1173.379  271.646     4.32  (NOT OK)
+================================================================================
+Executing test: ping_pong_unequal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_unequal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1762.749  1657.21     1.06  (OK)
+[Parallel + Always Spawn]               484.854   359.198     1.35  (NOT OK)
+[Parallel + Thread Pool + Spin]         335.401   363.92      0.92  (OK)
+[Parallel + Thread Pool + Sleep]        1755.34   349.31      5.03  (NOT OK)
+================================================================================
+Executing test: recursive_fibonacci...
+Reference binary: ./runtasks_ref_linux
+Results for: recursive_fibonacci
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                876.068   1366.185    0.64  (OK)
+[Parallel + Always Spawn]               220.921   230.853     0.96  (OK)
+[Parallel + Thread Pool + Spin]         183.332   262.989     0.70  (OK)
+[Parallel + Thread Pool + Sleep]        881.119   233.009     3.78  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                543.16    515.815     1.05  (OK)
+[Parallel + Always Spawn]               585.138   517.632     1.13  (OK)
+[Parallel + Thread Pool + Spin]         142.286   166.244     0.86  (OK)
+[Parallel + Thread Pool + Sleep]        550.716   266.873     2.06  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fewer_tasks...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fewer_tasks
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                537.283   513.444     1.05  (OK)
+[Parallel + Always Spawn]               561.696   526.554     1.07  (OK)
+[Parallel + Thread Pool + Spin]         143.185   165.471     0.87  (OK)
+[Parallel + Thread Pool + Sleep]        549.112   291.888     1.88  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fan_in...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fan_in
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                284.777   263.85      1.08  (OK)
+[Parallel + Always Spawn]               117.062   97.337      1.20  (NOT OK)
+[Parallel + Thread Pool + Spin]         55.904    65.64       0.85  (OK)
+[Parallel + Thread Pool + Sleep]        282.384   74.166      3.81  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_reduction_tree...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_reduction_tree
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                286.771   269.761     1.06  (OK)
+[Parallel + Always Spawn]               76.015    61.822      1.23  (NOT OK)
+[Parallel + Thread Pool + Spin]         53.262    56.815      0.94  (OK)
+[Parallel + Thread Pool + Sleep]        286.082   55.429      5.16  (NOT OK)
+================================================================================
+Executing test: spin_between_run_calls...
+Reference binary: ./runtasks_ref_linux
+Results for: spin_between_run_calls
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                316.52    490.804     0.64  (OK)
+[Parallel + Always Spawn]               165.203   260.956     0.63  (OK)
+[Parallel + Thread Pool + Spin]         199.325   307.426     0.65  (OK)
+[Parallel + Thread Pool + Sleep]        316.432   250.606     1.26  (NOT OK)
+================================================================================
+Executing test: mandelbrot_chunked...
+Reference binary: ./runtasks_ref_linux
+Results for: mandelbrot_chunked
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                464.575   430.473     1.08  (OK)
+[Parallel + Always Spawn]               64.052    58.283      1.10  (OK)
+[Parallel + Thread Pool + Spin]         62.949    66.267      0.95  (OK)
+[Parallel + Thread Pool + Sleep]        464.138   58.403      7.95  (NOT OK)
+================================================================================
+Overall performance results
+[Serial]                                : All passed Perf
+[Parallel + Always Spawn]               : Perf did not pass all tests
+[Parallel + Thread Pool + Spin]         : All passed Perf
+[Parallel + Thread Pool + Sleep]        : Perf did not pass all tests
+➜  part_a git:(1e2f94e) ✗ python3  ../tests/run_test_harness.py
+runtasks_ref
+Linux x86_64
+================================================================================
+Running task system grading harness... (11 total tests)
+  - Detected CPU with 8 execution contexts
+  - Task system configured to use at most 8 threads
+================================================================================
+================================================================================
+Executing test: super_super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                4.986     5.123       0.97  (OK)
+[Parallel + Always Spawn]               93.816    98.213      0.96  (OK)
+[Parallel + Thread Pool + Spin]         7.78      20.462      0.38  (OK)
+[Parallel + Thread Pool + Sleep]        6.044     39.762      0.15  (OK)
+================================================================================
+Executing test: super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                68.975    65.886      1.05  (OK)
+[Parallel + Always Spawn]               109.861   106.235     1.03  (OK)
+[Parallel + Thread Pool + Spin]         16.959    26.088      0.65  (OK)
+[Parallel + Thread Pool + Sleep]        68.604    42.398      1.62  (NOT OK)
+================================================================================
+Executing test: ping_pong_equal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_equal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1141.604  1108.157    1.03  (OK)
+[Parallel + Always Spawn]               378.104   279.022     1.36  (NOT OK)
+[Parallel + Thread Pool + Spin]         224.997   250.466     0.90  (OK)
+[Parallel + Thread Pool + Sleep]        1159.741  256.131     4.53  (NOT OK)
+================================================================================
+Executing test: ping_pong_unequal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_unequal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1729.797  1616.58     1.07  (OK)
+[Parallel + Always Spawn]               483.397   361.304     1.34  (NOT OK)
+[Parallel + Thread Pool + Spin]         327.356   352.805     0.93  (OK)
+[Parallel + Thread Pool + Sleep]        1726.935  339.274     5.09  (NOT OK)
+================================================================================
+Executing test: recursive_fibonacci...
+Reference binary: ./runtasks_ref_linux
+Results for: recursive_fibonacci
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                891.962   1375.227    0.65  (OK)
+[Parallel + Always Spawn]               222.234   229.73      0.97  (OK)
+[Parallel + Thread Pool + Spin]         179.452   262.585     0.68  (OK)
+[Parallel + Thread Pool + Sleep]        901.417   235.411     3.83  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                558.719   529.049     1.06  (OK)
+[Parallel + Always Spawn]               603.208   546.041     1.10  (OK)
+[Parallel + Thread Pool + Spin]         151.725   167.224     0.91  (OK)
+[Parallel + Thread Pool + Sleep]        557.125   272.796     2.04  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fewer_tasks...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fewer_tasks
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                565.391   533.472     1.06  (OK)
+[Parallel + Always Spawn]               610.517   549.01      1.11  (OK)
+[Parallel + Thread Pool + Spin]         156.346   192.209     0.81  (OK)
+[Parallel + Thread Pool + Sleep]        565.097   308.024     1.83  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fan_in...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fan_in
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                289.396   277.662     1.04  (OK)
+[Parallel + Always Spawn]               120.45    102.784     1.17  (OK)
+[Parallel + Thread Pool + Spin]         63.955    71.695      0.89  (OK)
+[Parallel + Thread Pool + Sleep]        291.937   78.453      3.72  (NOT OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_reduction_tree...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_reduction_tree
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                290.736   273.463     1.06  (OK)
+[Parallel + Always Spawn]               78.409    66.076      1.19  (OK)
+[Parallel + Thread Pool + Spin]         55.09     58.044      0.95  (OK)
+[Parallel + Thread Pool + Sleep]        287.468   60.912      4.72  (NOT OK)
+================================================================================
+Executing test: spin_between_run_calls...
+Reference binary: ./runtasks_ref_linux
+Results for: spin_between_run_calls
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                318.365   494.725     0.64  (OK)
+[Parallel + Always Spawn]               166.311   251.32      0.66  (OK)
+[Parallel + Thread Pool + Spin]         216.17    304.106     0.71  (OK)
+[Parallel + Thread Pool + Sleep]        319.964   250.433     1.28  (NOT OK)
+================================================================================
+Executing test: mandelbrot_chunked...
+Reference binary: ./runtasks_ref_linux
+Results for: mandelbrot_chunked
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                466.277   430.347     1.08  (OK)
+[Parallel + Always Spawn]               64.173    59.33       1.08  (OK)
+[Parallel + Thread Pool + Spin]         63.238    65.429      0.97  (OK)
+[Parallel + Thread Pool + Sleep]        467.005   58.774      7.95  (NOT OK)
+================================================================================
+Overall performance results
+[Serial]                                : All passed Perf
+[Parallel + Always Spawn]               : Perf did not pass all tests
+[Parallel + Thread Pool + Spin]         : All passed Perf
+[Parallel + Thread Pool + Sleep]        : Perf did not pass all tests
+~~~
+
+# step3 
+almost same with the spinning thread system, but notice the sleep&notify condition.
+test results :
+~~~md
+➜  part_a git:(main) ✗ python3  ../tests/run_test_harness.py
+runtasks_ref
+Linux x86_64
+================================================================================
+Running task system grading harness... (11 total tests)
+  - Detected CPU with 8 execution contexts
+  - Task system configured to use at most 8 threads
+================================================================================
+================================================================================
+Executing test: super_super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                4.741     5.181       0.92  (OK)
+[Parallel + Always Spawn]               96.521    100.973     0.96  (OK)
+[Parallel + Thread Pool + Spin]         9.903     21.298      0.46  (OK)
+[Parallel + Thread Pool + Sleep]        12.803    40.706      0.31  (OK)
+================================================================================
+Executing test: super_light...
+Reference binary: ./runtasks_ref_linux
+Results for: super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                57.068    71.566      0.80  (OK)
+[Parallel + Always Spawn]               103.961   115.745     0.90  (OK)
+[Parallel + Thread Pool + Spin]         16.147    32.148      0.50  (OK)
+[Parallel + Thread Pool + Sleep]        38.281    46.759      0.82  (OK)
+================================================================================
+Executing test: ping_pong_equal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_equal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                920.71    1144.672    0.80  (OK)
+[Parallel + Always Spawn]               301.553   303.343     0.99  (OK)
+[Parallel + Thread Pool + Spin]         176.233   286.603     0.61  (OK)
+[Parallel + Thread Pool + Sleep]        217.495   278.346     0.78  (OK)
+================================================================================
+Executing test: ping_pong_unequal...
+Reference binary: ./runtasks_ref_linux
+Results for: ping_pong_unequal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1624.733  1648.29     0.99  (OK)
+[Parallel + Always Spawn]               447.375   372.955     1.20  (OK)
+[Parallel + Thread Pool + Spin]         309.572   352.861     0.88  (OK)
+[Parallel + Thread Pool + Sleep]        329.168   347.518     0.95  (OK)
+================================================================================
+Executing test: recursive_fibonacci...
+Reference binary: ./runtasks_ref_linux
+Results for: recursive_fibonacci
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                836.679   1398.359    0.60  (OK)
+[Parallel + Always Spawn]               206.66    243.529     0.85  (OK)
+[Parallel + Thread Pool + Spin]         170.252   277.111     0.61  (OK)
+[Parallel + Thread Pool + Sleep]        169.015   240.802     0.70  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                521.631   532.443     0.98  (OK)
+[Parallel + Always Spawn]               563.455   565.042     1.00  (OK)
+[Parallel + Thread Pool + Spin]         135.124   184.551     0.73  (OK)
+[Parallel + Thread Pool + Sleep]        318.094   277.388     1.15  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fewer_tasks...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fewer_tasks
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                512.513   536.055     0.96  (OK)
+[Parallel + Always Spawn]               538.643   556.911     0.97  (OK)
+[Parallel + Thread Pool + Spin]         145.882   182.343     0.80  (OK)
+[Parallel + Thread Pool + Sleep]        330.761   303.919     1.09  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fan_in...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_fan_in
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                266.169   272.67      0.98  (OK)
+[Parallel + Always Spawn]               111.719   99.671      1.12  (OK)
+[Parallel + Thread Pool + Spin]         55.819    68.822      0.81  (OK)
+[Parallel + Thread Pool + Sleep]        77.386    74.641      1.04  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_reduction_tree...
+Reference binary: ./runtasks_ref_linux
+Results for: math_operations_in_tight_for_loop_reduction_tree
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                266.028   272.301     0.98  (OK)
+[Parallel + Always Spawn]               70.984    64.92       1.09  (OK)
+[Parallel + Thread Pool + Spin]         48.673    60.246      0.81  (OK)
+[Parallel + Thread Pool + Sleep]        52.923    58.824      0.90  (OK)
+================================================================================
+Executing test: spin_between_run_calls...
+Reference binary: ./runtasks_ref_linux
+Results for: spin_between_run_calls
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                290.88    497.455     0.58  (OK)
+[Parallel + Always Spawn]               147.536   253.107     0.58  (OK)
+[Parallel + Thread Pool + Spin]         196.596   303.8       0.65  (OK)
+[Parallel + Thread Pool + Sleep]        151.046   253.046     0.60  (OK)
+================================================================================
+Executing test: mandelbrot_chunked...
+Reference binary: ./runtasks_ref_linux
+Results for: mandelbrot_chunked
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                423.278   428.494     0.99  (OK)
+[Parallel + Always Spawn]               57.689    58.587      0.98  (OK)
+[Parallel + Thread Pool + Spin]         57.328    66.761      0.86  (OK)
+[Parallel + Thread Pool + Sleep]        57.154    58.292      0.98  (OK)
+================================================================================
+Overall performance results
+[Serial]                                : All passed Perf
+[Parallel + Always Spawn]               : All passed Perf
+[Parallel + Thread Pool + Spin]         : All passed Perf
+[Parallel + Thread Pool + Sleep]        : All passed Perf
+~~~
