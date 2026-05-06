@@ -2,6 +2,11 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
+#include "atomic"
+#include <queue>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -53,6 +58,69 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void sync();
 };
 
+class TaskDesc
+{
+    public:
+        IRunnable* runnable;
+        int num_total_tasks;
+        TaskID taskId;
+        int task_slice_num;
+    TaskDesc(): runnable(nullptr), num_total_tasks(0), taskId(-1), task_slice_num(-1) {}
+    TaskDesc(IRunnable* r, int num_total_tasks, TaskID taskId):
+            runnable(r), num_total_tasks(num_total_tasks), taskId(taskId), task_slice_num(-1) {}
+};
+
+class TaskSliceDesc
+{
+    public:
+        int assign_from;
+        int assign_to;
+        IRunnable* runnable;
+        int num_total_tasks;
+        TaskID taskid_belongs_to;
+        TaskSliceDesc() : assign_from(0), assign_to(0), runnable(nullptr), num_total_tasks(0), taskid_belongs_to(-1) {}
+        TaskSliceDesc(int from, int to, IRunnable* r, int total, TaskID taskIdBelongsTo): 
+                assign_from(from), assign_to(to), runnable(r), num_total_tasks(total), taskid_belongs_to(taskIdBelongsTo) {}
+        std::vector<int> m_depDes; // iter.first rely on iter.second
+        
+};
+
+class WorkQueue
+{
+public:
+    WorkQueue() = default;
+    void InQueueTask(TaskSliceDesc& taskdes)
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        m_queue.push(taskdes);
+    }
+
+    bool DeQueueTask(TaskSliceDesc& out)
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        if (m_queue.empty()) return false;
+        out = m_queue.front();
+        m_queue.pop();
+        return true;
+    }
+
+    TaskSliceDesc& Front()
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        return m_queue.front();
+    }
+
+    bool IsEmpty() 
+    {
+        std::lock_guard<std::mutex> lockGuard(m_lock);
+        return m_queue.empty();
+    }
+
+private:
+    std::queue<TaskSliceDesc> m_queue;
+    std::mutex m_lock;
+};
+
 /*
  * TaskSystemParallelThreadPoolSleeping: This class is the student's
  * optimized implementation of a parallel task execution engine that uses
@@ -61,6 +129,13 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     public:
+        class TaskState
+        {
+            public:
+                std::atomic<bool> m_remainingTaskNum;
+                std::mutex m_tsLock;
+                std::atomic<bool> m_killed;
+        };
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
         const char* name();
@@ -68,6 +143,17 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+        TaskID m_nextTaskId;
+
+        std::vector<std::thread> m_threads;
+        int m_num_threads;
+        TaskState m_taskState;
+        
+        std::vector<WorkQueue> m_workQuque; // task slices that are ready to exec and are distributed to m_num_threads
+        std::vector<TaskDesc> m_waitingQueue;
+
+
 };
 
 #endif

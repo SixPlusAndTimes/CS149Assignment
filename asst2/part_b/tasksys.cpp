@@ -126,13 +126,15 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads),
+        m_nextTaskId(0), m_threads(num_threads), m_num_threads(num_threads), m_taskState(), m_workQuque(), m_waitingQueue()
+{
+    m_taskState.m_killed.store(false, std::memory_order_release);
+    m_taskState.m_remainingTaskNum.store(0, std::memory_order_release);
+    for (size_t i = 0; i < m_threads.size(); i++)
+    {
+        m_threads[i] = std::thread(TaskSystemParallelThreadPoolSpinningWorker, static_cast<int>(i), this);
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
