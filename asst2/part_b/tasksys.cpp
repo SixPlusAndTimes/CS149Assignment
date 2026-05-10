@@ -1,7 +1,8 @@
 #include "tasksys.h"
 #include <assert.h>
 #include <iostream>
-#define DEBUG
+#include <sstream> 
+// #define DEBUG
 #ifdef DEBUG
 #define debugprint(format, ...) printf(format, ##__VA_ARGS__)
 #else
@@ -160,14 +161,24 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
             taskSliceDes.runnable->runTask(i, taskSliceDes.num_total_tasks);
         }
         int doneNum = taskSliceDes.assign_to - taskSliceDes.assign_from;
+        debugprint("taskid belongs") ;
+        taskSystem->m_taskRecordLck.lock();
         auto& taskDes = taskSystem->m_taskRecords.find(taskSliceDes.taskid_belongs_to)->second;
+        taskSystem->m_taskRecordLck.unlock();
+        assert(taskDes.get() != nullptr);
         taskDes->taskDesLck.lock();
         taskDes->task_not_done_num -= doneNum;
-        if (taskDes->task_not_done_num == 0)
+        bool done = taskDes->task_not_done_num == 0;
+        taskDes->taskDesLck.unlock();
+
+        if (done)
         {
             for (auto taskId : taskDes->sufs)
             {
+                taskSystem->m_taskRecordLck.lock();
                 auto& taskSuf = taskSystem->m_taskRecords.find(taskId)->second;
+                taskSystem->m_taskRecordLck.unlock();
+
                 taskSuf->taskDesLck.lock();
                 taskSuf->deped_has_not_been_done_num -= 1;
                 taskSuf->taskDesLck.unlock();
@@ -182,7 +193,6 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
             }
             debugprint("threadid %d done 1 task, taskid %d, remainingTaksNum %d\n", index, taskDes->taskId, taskSystem->m_taskState.m_RemainingTask.load());
         }
-        taskDes->taskDesLck.unlock();
         // debugprint("thread idx %d task [%d, %d) completed\n", index, taskSliceDes.assign_from, taskSliceDes.assign_to);
         return true;
     }
@@ -304,10 +314,16 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     TaskID curTaskId = m_nextTaskId;
 
     std::unique_ptr<TaskDesc> taskDesUptr(new TaskDesc(runnable, num_total_tasks, curTaskId, deps));
+    std::stringstream depString;
+    depString << "begin to add new task, new taskId " << curTaskId << ", deps[ ";
+    for (TaskID taskIdDep : deps)
+    {
+        depString << taskIdDep << " ";
+    }
+    depString << "]\n";
+    debugprint(depString.str().c_str());
     m_waitingQueueLck.lock();
-    debugprint("begin to add new task, new taskId %d, deps[ ", curTaskId);
-    for (TaskID taskIdep : deps) debugprint("%d ", taskIdep);
-    debugprint("]\n");
+    m_taskRecordLck.lock();
     for (TaskID taskeId : deps)
     {
         assert(m_taskRecords.count(taskeId) != 0);
@@ -325,6 +341,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
         preTask->taskDesLck.unlock();
     }
     m_taskRecords.emplace(taskDesUptr->taskId, std::move(taskDesUptr));
+    m_taskRecordLck.unlock();
     m_waitingQueue.push_back(m_taskRecords.find(curTaskId)->second.get());
     m_waitingQueueLck.unlock();
 
@@ -342,7 +359,7 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     std::unique_lock<std::mutex> lc(m_taskState.m_allTasksDoneLk);
     debugprint("wait for all tasks done, remaing Task Num is %d\n", m_taskState.m_RemainingTask.load());
     m_taskState.m_allTasksDoneCv.wait(lc, [&]() {return m_taskState.m_RemainingTask.load() == 0;});
-
+    debugprint("tasksystem: all tasks done\n");
     return;
 }
 

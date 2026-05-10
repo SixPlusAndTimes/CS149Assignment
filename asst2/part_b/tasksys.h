@@ -176,6 +176,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::vector<TaskDesc*>   m_waitingQueue;
         std::mutex              m_waitingQueueLck;
 
+        std::mutex              m_taskRecordLck;
         std::unordered_map<TaskID, std::unique_ptr<TaskDesc>> m_taskRecords;
 
 
