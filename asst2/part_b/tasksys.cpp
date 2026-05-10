@@ -146,7 +146,7 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
         {
             if (taskSystem->m_workQuque[stolenIdx].DeQueueTask(taskSliceDes))
             {
-                // debugprint("thread idx %d steal from %d [%d %d)\n", index, stolenIdx, taskSliceDes.assign_from, taskSliceDes.assign_to);
+                debugprint("thread idx %d steal from %d [%d %d)\n", index, stolenIdx, taskSliceDes.assign_from, taskSliceDes.assign_to);
                 break;
             }
         }
@@ -183,7 +183,7 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
             debugprint("threadid %d done 1 task, taskid %d, remainingTaksNum %d\n", index, taskDes->taskId, taskSystem->m_taskState.m_RemainingTask.load());
         }
         taskDes->taskDesLck.unlock();
-        // printf("thread idx %d task [%d, %d) completed\n", index, taskSliceDes.assign_from, taskSliceDes.assign_to);
+        // debugprint("thread idx %d task [%d, %d) completed\n", index, taskSliceDes.assign_from, taskSliceDes.assign_to);
         return true;
     }
     return false;
@@ -233,6 +233,8 @@ bool TaskSystemParallelThreadPoolSleeping::GetWorkFromWaitingQueue(int index)
         if (isFInd) 
         { 
             m_waitingQueue.erase(iter); // notice the erase logical. erase it directly since we break the loop
+            debugprint("thread idx %d, Get A workFromWaitingQueue, taskId%d, num_total_tasks %d deped_has_not_been_done_num %d\n", taskDesPtr->taskId, 
+                                    taskDesPtr->num_total_tasks, taskDesPtr->deped_has_not_been_done_num, taskDesPtr->task_not_done_num);
             std::unique_lock<std::mutex> lc(m_taskState.m_hasTaksLk);
             m_taskState.m_hasTaksCv.notify_all();
             lc.unlock();
