@@ -6,8 +6,13 @@
 #include <queue>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <condition_variable>
+#include <atomic>
+#include <set>
 
+#include <memory>
 /*
  * TaskSystemSerial: This class is the student's implementation of a
  * serial task execution engine.  See definition of ITaskSystem in
@@ -64,10 +69,17 @@ class TaskDesc
         IRunnable* runnable;
         int num_total_tasks;
         TaskID taskId;
-        int task_slice_num;
-    TaskDesc(): runnable(nullptr), num_total_tasks(0), taskId(-1), task_slice_num(-1) {}
-    TaskDesc(IRunnable* r, int num_total_tasks, TaskID taskId):
-            runnable(r), num_total_tasks(num_total_tasks), taskId(taskId), task_slice_num(-1) {}
+        int task_not_done_num; // decreased from num_total_tasks
+        std::vector<TaskID> deps;
+        int deped_has_not_been_done_num; // Only when all dependent tasks are completed can this task moved into workqueue
+        std::set<TaskID> sufs; // Tasks that depend on this task
+        bool has_been_done; // indicate whether this task hasbeen done
+                                // may be duplicated in function with task_not_done_num
+        std::mutex taskDesLck;
+    TaskDesc(): runnable(nullptr), num_total_tasks(0), taskId(-1), task_not_done_num(-1) {}
+    TaskDesc(IRunnable* r, int num_total_tasks, TaskID taskId, const std::vector<TaskID>& indeps):
+            runnable(r), num_total_tasks(num_total_tasks), taskId(taskId), 
+            task_not_done_num(num_total_tasks), deps(indeps), deped_has_not_been_done_num(0), sufs(), has_been_done(false), taskDesLck() {}
 };
 
 class TaskSliceDesc
@@ -81,7 +93,6 @@ class TaskSliceDesc
         TaskSliceDesc() : assign_from(0), assign_to(0), runnable(nullptr), num_total_tasks(0), taskid_belongs_to(-1) {}
         TaskSliceDesc(int from, int to, IRunnable* r, int total, TaskID taskIdBelongsTo): 
                 assign_from(from), assign_to(to), runnable(r), num_total_tasks(total), taskid_belongs_to(taskIdBelongsTo) {}
-        std::vector<int> m_depDes; // iter.first rely on iter.second
         
 };
 
@@ -121,6 +132,7 @@ private:
     std::mutex m_lock;
 };
 
+
 /*
  * TaskSystemParallelThreadPoolSleeping: This class is the student's
  * optimized implementation of a parallel task execution engine that uses
@@ -132,9 +144,14 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         class TaskState
         {
             public:
-                std::atomic<bool> m_remainingTaskNum;
-                std::mutex m_tsLock;
+                std::atomic<int> m_RemainingTask;
                 std::atomic<bool> m_killed;
+
+                std::mutex  m_hasTaksLk;
+                std::condition_variable m_hasTaksCv;
+
+                std::mutex m_allTasksDoneLk;
+                std::condition_variable m_allTasksDoneCv;
         };
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
@@ -142,16 +159,24 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
+        void SliceAndMoveTheTaskToWorkQueue(const TaskDesc& taskDes);
         void sync();
+
+        void TaskSystemParallelThreadPoolSleepingWorker(int index);
+        bool GetWorkFromWaitingQueue(int index);
 
         TaskID m_nextTaskId;
 
         std::vector<std::thread> m_threads;
         int m_num_threads;
+
         TaskState m_taskState;
         
-        std::vector<WorkQueue> m_workQuque; // task slices that are ready to exec and are distributed to m_num_threads
-        std::vector<TaskDesc> m_waitingQueue;
+        std::vector<WorkQueue>  m_workQuque; // task slices that are ready to exec and are distributed to m_num_threads
+        std::vector<TaskDesc*>   m_waitingQueue;
+        std::mutex              m_waitingQueueLck;
+
+        std::unordered_map<TaskID, std::unique_ptr<TaskDesc>> m_taskRecords;
 
 
 };
