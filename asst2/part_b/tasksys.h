@@ -69,17 +69,17 @@ class TaskDesc
         IRunnable* runnable;
         int num_total_tasks;
         TaskID taskId;
-        int task_not_done_num; // decreased from num_total_tasks
+
+        std::atomic<int> task_not_done_num; // decreased from num_total_tasks
+        std::atomic<int> deped_has_not_been_done_num; // Only when all dependent tasks are completed can this task moved into workqueue
+
         std::vector<TaskID> deps;
-        int deped_has_not_been_done_num; // Only when all dependent tasks are completed can this task moved into workqueue
         std::set<TaskID> sufs; // Tasks that depend on this task
-        bool has_been_done; // indicate whether this task hasbeen done
-                                // may be duplicated in function with task_not_done_num
         std::mutex taskDesLck;
     TaskDesc(): runnable(nullptr), num_total_tasks(0), taskId(-1), task_not_done_num(-1) {}
     TaskDesc(IRunnable* r, int num_total_tasks, TaskID taskId, const std::vector<TaskID>& indeps):
             runnable(r), num_total_tasks(num_total_tasks), taskId(taskId), 
-            task_not_done_num(num_total_tasks), deps(indeps), deped_has_not_been_done_num(0), sufs(), has_been_done(false), taskDesLck() {}
+            task_not_done_num(num_total_tasks), deped_has_not_been_done_num(0), deps(indeps),  sufs(), taskDesLck() {}
 };
 
 class TaskSliceDesc

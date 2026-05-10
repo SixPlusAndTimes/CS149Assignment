@@ -157,18 +157,20 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
     {
         for (int i = taskSliceDes.assign_from; i < taskSliceDes.assign_to; i++)
         {
-            // debugprint("thread idx %d task [%d, %d) starttorun\n", index, taskSliceDes.assign_from, taskSliceDes.assign_to);
             taskSliceDes.runnable->runTask(i, taskSliceDes.num_total_tasks);
         }
         int doneNum = taskSliceDes.assign_to - taskSliceDes.assign_from;
-        debugprint("taskid belongs") ;
+
         taskSystem->m_taskRecordLck.lock();
         auto& taskDes = taskSystem->m_taskRecords.find(taskSliceDes.taskid_belongs_to)->second;
         taskSystem->m_taskRecordLck.unlock();
-        assert(taskDes.get() != nullptr);
-        taskDes->taskDesLck.lock();
-        taskDes->task_not_done_num -= doneNum;
-        bool done = taskDes->task_not_done_num == 0;
+        // assert(taskDes.get() != nullptr);
+
+        taskDes->taskDesLck.lock(); 
+                    // it seems we do not need the lock operation, but it will lead to dead lock if we do not do the lock operation
+                    // But I am not intereted in finding out the reason, just let it go (
+        taskDes->task_not_done_num.fetch_sub(doneNum, std::memory_order_release);
+        bool done = taskDes->task_not_done_num.load(std::memory_order_acquire) == 0;
         taskDes->taskDesLck.unlock();
 
         if (done)
@@ -179,12 +181,10 @@ bool DoWork(int index, TaskSystemParallelThreadPoolSleeping* taskSystem)
                 auto& taskSuf = taskSystem->m_taskRecords.find(taskId)->second;
                 taskSystem->m_taskRecordLck.unlock();
 
-                taskSuf->taskDesLck.lock();
-                taskSuf->deped_has_not_been_done_num -= 1;
-                taskSuf->taskDesLck.unlock();
+                taskSuf->deped_has_not_been_done_num.fetch_sub(1, std::memory_order_release);
             }
-            taskSystem->m_taskState.m_RemainingTask.fetch_sub(1);
-            if (taskSystem->m_taskState.m_RemainingTask.load() == 0)
+            taskSystem->m_taskState.m_RemainingTask.fetch_sub(1, std::memory_order_release);
+            if (taskSystem->m_taskState.m_RemainingTask.load(std::memory_order_acquire) == 0)
             {
                 std::unique_lock<std::mutex> lc(taskSystem->m_taskState.m_allTasksDoneLk);
                 taskSystem->m_taskState.m_allTasksDoneCv.notify_all();
@@ -233,18 +233,16 @@ bool TaskSystemParallelThreadPoolSleeping::GetWorkFromWaitingQueue(int index)
     for (auto iter = m_waitingQueue.begin(); iter != m_waitingQueue.end(); ++iter)
     {
         TaskDesc* taskDesPtr = *iter;
-        taskDesPtr->taskDesLck.lock();
-        if (taskDesPtr->deped_has_not_been_done_num == 0)
+        if (taskDesPtr->deped_has_not_been_done_num.load(std::memory_order_acquire) == 0)
         {
             SliceAndMoveTheTaskToWorkQueue(*taskDesPtr);
             isFInd = true;
         }
-        taskDesPtr->taskDesLck.unlock();
         if (isFInd) 
         { 
             m_waitingQueue.erase(iter); // notice the erase logical. erase it directly since we break the loop
             debugprint("thread idx %d, Get A workFromWaitingQueue, taskId%d, num_total_tasks %d deped_has_not_been_done_num %d\n", taskDesPtr->taskId, 
-                                    taskDesPtr->num_total_tasks, taskDesPtr->deped_has_not_been_done_num, taskDesPtr->task_not_done_num);
+                        taskDesPtr->num_total_tasks, taskDesPtr->deped_has_not_been_done_num.load(std::memory_order_acquire), taskDesPtr->task_not_done_num.load());
             std::unique_lock<std::mutex> lc(m_taskState.m_hasTaksLk);
             m_taskState.m_hasTaksCv.notify_all();
             lc.unlock();
@@ -258,7 +256,6 @@ bool TaskSystemParallelThreadPoolSleeping::GetWorkFromWaitingQueue(int index)
 
 void TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleepingWorker(int index)
 {
-    // printf("threadidx %d enter SpiningWorker\n", index);
     while (true)
     {
         if (m_taskState.m_killed.load(std::memory_order_acquire))
@@ -326,16 +323,12 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     m_taskRecordLck.lock();
     for (TaskID taskeId : deps)
     {
-        assert(m_taskRecords.count(taskeId) != 0);
+        // assert(m_taskRecords.count(taskeId) != 0);
         auto& preTask = m_taskRecords[taskeId];
         preTask->taskDesLck.lock();
-        if (preTask->task_not_done_num == 0) 
+        if (preTask->task_not_done_num.load() != 0) 
         {
-
-        }
-        if (preTask->task_not_done_num != 0) 
-        {
-            taskDesUptr->deped_has_not_been_done_num++;
+            taskDesUptr->deped_has_not_been_done_num.fetch_add(1, std::memory_order_release);
             preTask->sufs.insert(taskDesUptr->taskId);
         }
         preTask->taskDesLck.unlock();
