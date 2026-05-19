@@ -11,9 +11,9 @@ CC_FILES   := main.cpp
 ARCH := $(shell uname -m)
 
 ifeq ($(ARCH), aarch64)
-    CXX = g++
+    CXX = g++-12
 else
-    CXX = g++ -m64
+    CXX = g++-12 -m64
 endif
 
 OBJDIR=objs
@@ -26,7 +26,7 @@ else
 LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart
 endif
 NVCC=nvcc
-NVCCFLAGS=-O3 -m64
+NVCCFLAGS=-O3 -m64 -ccbin g++-12
 
 
 OBJS=$(OBJDIR)/main.o  $(OBJDIR)/saxpy.o
