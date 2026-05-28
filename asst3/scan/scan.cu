@@ -231,6 +231,22 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
     return overallDuration; 
 }
 
+__global__ void 
+fill_repeat_flags(int* input, int* outflags)
+{
+    long long idx = ( blockIdx.x * blockDim.x + threadIdx.x ); // avoid integer overflow
+    outflags[idx] = (input[idx] == input[idx + 1]);
+}
+
+__global__ void 
+scatter_flags(int* scan, int* flags, int* output)
+{
+    long long idx = ( blockIdx.x * blockDim.x + threadIdx.x ); // avoid integer overflow
+    if (flags[idx])
+    {
+        output[scan[idx]] = idx;
+    }
+}
 
 // find_repeats --
 //
@@ -252,7 +268,80 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // must ensure that the results of find_repeats are correct given
     // the actual array length.
 
-    return 0; 
+    int rounded_length = nextPow2(length);
+
+    // int* tmp = new int[rounded_length];
+    // cudaMemcpy(tmp, device_input, rounded_length * sizeof(int), cudaMemcpyDeviceToHost);
+    // printf("find repeats start\n");
+    // for (int i = 0; i < rounded_length; ++i)
+    // {
+    //     printf("%2d ", tmp[i]);
+    // }
+    // printf("\n");
+
+    int *flags;
+    cudaMalloc((void **)&flags, rounded_length * sizeof(int));
+    int thread_num = rounded_length - 1;
+    int blocks = (thread_num - 1 + THREADS_PER_BLOCK) / THREADS_PER_BLOCK;
+    if (thread_num < THREADS_PER_BLOCK) 
+    {
+        fill_repeat_flags<<<1, thread_num>>>(device_input, flags);
+    }
+    else 
+    {
+        fill_repeat_flags<<<blocks, THREADS_PER_BLOCK>>>(device_input, flags);
+    }
+    CHECK_KERNEL();
+    cudaMemset(flags + rounded_length - 1, 0, sizeof(int));
+
+    {
+        // cudaMemcpy(tmp, flags, rounded_length * sizeof(int), cudaMemcpyDeviceToHost);
+        // printf("fill_repeat_flags done\n");
+        // for (int i = 0; i < rounded_length; ++i)
+        // {
+        //     printf("%2d ", tmp[i]);
+        // }
+        // printf("\n");
+    }
+    
+    int* scans;
+    cudaMalloc((void **)&scans, rounded_length * sizeof(int));
+    cudaMemcpy(scans, flags, rounded_length * sizeof(int), cudaMemcpyDeviceToDevice);
+    exclusive_scan(scans, rounded_length, nullptr);
+
+    {
+        // cudaMemcpy(tmp, scans, rounded_length * sizeof(int), cudaMemcpyDeviceToHost);
+        // printf("exclusive_scan done\n");
+        // for (int i = 0; i < rounded_length; ++i)
+        // {
+        //     printf("%2d ", tmp[i]);
+        // }
+        // printf("\n");
+    }
+
+    
+    if (thread_num < THREADS_PER_BLOCK) 
+    {
+        scatter_flags<<<1, thread_num>>>(scans, flags, device_output);
+    }
+    else 
+    {
+        scatter_flags<<<blocks, THREADS_PER_BLOCK>>>(scans, flags, device_output);
+    }
+
+    {
+        // cudaMemcpy(tmp, device_output, rounded_length * sizeof(int), cudaMemcpyDeviceToHost);
+        // printf("scatter_flags done\n");
+        // for (int i = 0; i < rounded_length; ++i)
+        // {
+        //     printf("%2d ", tmp[i]);
+        // }
+        // printf("\n");
+    }
+    int num_repeats;
+    cudaMemcpy(&num_repeats, &scans[length - 1], sizeof(int), cudaMemcpyDeviceToHost);
+    // printf("repeat num is %d\n", num_repeats);
+    return num_repeats; 
 }
 
 
