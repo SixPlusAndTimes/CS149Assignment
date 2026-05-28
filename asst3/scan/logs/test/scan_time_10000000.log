@@ -6,5 +6,5 @@ Device 0: NVIDIA GeForce RTX 3050 Laptop GPU
    CUDA Cap:   8.6
 ---------------------------------------------------------
 Array size: 10000000
-Student GPU time: 12.158 ms
+Student GPU time: 13.096 ms
 Scan outputs are correct!

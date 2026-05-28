@@ -54,10 +54,7 @@ upsweep_kernel(int N, int* inputArray, int stride)
     
     // int idx = (blockIdx.x * blockDim.x + threadIdx.x + 1) * stride - 1;
     long long idx = (blockIdx.x * blockDim.x + threadIdx.x + 1) * stride - 1; // avoid integer overflow
-    if (idx < N)
-    {
-        inputArray[idx] += inputArray[idx - (stride / 2)];
-    }
+    inputArray[idx] += inputArray[idx - (stride >> 1)];
 }
 
 __global__ void
@@ -65,12 +62,9 @@ downsweep_kernel(int N, int* inputArray, int stride)
 {
     // int idx = ( blockIdx.x * blockDim.x + threadIdx.x + 1) * stride - 1;
     long long idx = ( blockIdx.x * blockDim.x + threadIdx.x + 1) * stride - 1; // avoid integer overflow
-    if (idx < N)
-    {
-        int tmp = inputArray[idx - (stride / 2)];
-        inputArray[idx - (stride / 2)] = inputArray[idx];
-        inputArray[idx] += tmp;
-    }
+    int tmp = inputArray[idx - (stride >> 1)];
+    inputArray[idx - (stride >> 1)] = inputArray[idx];
+    inputArray[idx] += tmp;
 }
 // exclusive_scan --
 //
@@ -103,10 +97,16 @@ void exclusive_scan(int* input, int roundedLength, int* result)
 
     // upsweep phase
     for (int two_d = 1; two_d < roundedLength/2; two_d*=2) {
-        // int two_dplus1 = 2*two_d;
         int num_threads = roundedLength / (2 * two_d);
         int blocks = (num_threads - 1 + THREADS_PER_BLOCK) / THREADS_PER_BLOCK;
-        upsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
+        if (num_threads <= THREADS_PER_BLOCK)
+        {
+            upsweep_kernel<<<1, num_threads>>>(roundedLength, input, 2 * two_d);
+        }
+        else 
+        {
+            upsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
+        }
         CHECK_KERNEL();
         // cudaDeviceSynchronize(); 
 
@@ -123,10 +123,16 @@ void exclusive_scan(int* input, int roundedLength, int* result)
     cudaMemset(input + roundedLength - 1, 0, sizeof(int));
     // downsweep phase
     for (int two_d = roundedLength/2, thread_num = 1; two_d >= 1; two_d /= 2, thread_num *= 2) {
-        // int two_dplus1 = 2*two_d;
         int blocks = (thread_num - 1 + THREADS_PER_BLOCK) / THREADS_PER_BLOCK;
         // printf("downsweep phase, two_d %d, two_dplus1 %d, numthread %d, blocks %d\n", two_d, two_dplus1, thread_num, blocks);
-        downsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
+        if (thread_num <= THREADS_PER_BLOCK)
+        {
+            downsweep_kernel<<<1, thread_num>>>(roundedLength, input, 2 * two_d);
+        }
+        else 
+        {
+            downsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
+        }
         CHECK_KERNEL();
         // cudaDeviceSynchronize(); 
 
