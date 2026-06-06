@@ -6,8 +6,11 @@
 #include "refRenderer.h"
 #include "cudaRenderer.h"
 #include "platformgl.h"
+#include "image.h"
 
 #define DEFAULT_IMAGE_SIZE 1024
+#define DebugPixelX 205
+#define DebugPixelY 389
 
 
 void startRendererWithDisplay(CircleRenderer* renderer);
@@ -47,6 +50,7 @@ int main(int argc, char** argv)
     bool interactiveMode = false;
     int seed = 0;
     
+
     // parse commandline options ////////////////////////////////////////////
     int opt;
     static struct option long_options[] = {
@@ -162,6 +166,13 @@ int main(int argc, char** argv)
         cuda_renderer = new CudaRenderer();
 
         ref_renderer->allocOutputImage(imageSize, imageSize);
+        const Image* refimage = ref_renderer->getImage();
+        printf("pixel [%d %d]", DebugPixelX, DebugPixelY);
+        printf("expect rgb is [%f %f %f %f] \n",
+                                refimage->data[(DebugPixelY * refimage->width + DebugPixelX) * 4], 
+                                refimage->data[((DebugPixelY * refimage->width + DebugPixelX) * 4) + 1], 
+                                refimage->data[((DebugPixelY * refimage->width + DebugPixelX) * 4) + 2],
+                                refimage->data[((DebugPixelY * refimage->width + DebugPixelX) * 4) + 3]);
         ref_renderer->loadScene(sceneName, seed);
         ref_renderer->setup();
         cuda_renderer->allocOutputImage(imageSize, imageSize);

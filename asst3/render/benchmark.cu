@@ -8,6 +8,8 @@
 #include "image.h"
 #include "ppm.h"
 
+#define DebugPixelX 389
+#define DebugPixelY 205
 
 static void compare_images(const Image* ref_image, const Image* cuda_image) {
     int i;
@@ -28,7 +30,7 @@ static void compare_images(const Image* ref_image, const Image* cuda_image) {
             // Get pixel number and print values
             int j = i/4;
             printf ("Mismatch detected at pixel [%d][%d], value = %f, expected %f ", 
-                    j/cuda_image->width, j%cuda_image->width, 
+                    j%cuda_image->width, j/cuda_image->width, 
                     cuda_image->data[i], ref_image->data[i]);
 
             printf ("for color ");
@@ -38,8 +40,23 @@ static void compare_images(const Image* ref_image, const Image* cuda_image) {
                 case 2 : printf ("Blue\n"); break;
             }
 
+            // if (j/cuda_image->width == DebugPixelY && j%cuda_image->width == DebugPixelX)
+            // {
+            //     printf("i = %d, calcidx = %d\n ", i, (DebugPixelY * ref_image->width + DebugPixelX) * 4);
+            //     printf("expect rgb is [%f %f %f %f] \n",
+            //                     ref_image->data[(DebugPixelY * ref_image->width + DebugPixelX) * 4], 
+            //                     ref_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 1], 
+            //                     ref_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 2],
+            //                     ref_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 3]);
+            //     printf("actual rgb is [%f %f %f %f] \n",
+            //                     cuda_image->data[(DebugPixelY * ref_image->width + DebugPixelX) * 4], 
+            //                     cuda_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 1], 
+            //                     cuda_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 2],
+            //                     cuda_image->data[((DebugPixelY * ref_image->width + DebugPixelX) * 4) + 3]);
+            // }
 
         }
+
 
         // Ignore 5 errors - may come up because of rounding in distance calculation
         if (mismatch_count > 5) {
