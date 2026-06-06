@@ -54,6 +54,8 @@ struct GlobalConstants {
     int imageWidth;
     int imageHeight;
     float* imageData;
+    float invWidth;
+    float invHeight;
 };
 
 // Global variable that is in scope, but read-only, for all cuda
@@ -567,6 +569,8 @@ CudaRenderer::setup() {
     params.numCircles = numCircles;
     params.imageWidth = image->width;
     params.imageHeight = image->height;
+    params.invWidth = 1.0 / params.imageWidth;
+    params.invHeight = 1.0 / params.imageHeight;
     params.position = cudaDevicePosition;
     params.velocity = cudaDeviceVelocity;
     params.color = cudaDeviceColor;
@@ -661,19 +665,17 @@ CudaRenderer::advanceAnimation() {
 __global__ 
 void kernelRenderPixels()
 {
-    __shared__ int isBoxInCircle[BLOCKSIZE];
+    __shared__ uint isBoxInCircle[BLOCKSIZE];
     // __shared__ uint prefixSumInput[BLOCKSIZE];
-    // __shared__ uint prefixSumOutput[BLOCKSIZE];
-    // __shared__ uint prefixSumScratch[2 * BLOCKSIZE];
+    __shared__ uint prefixSumOutput[BLOCKSIZE];
+    __shared__ uint prefixSumScratch[2 * BLOCKSIZE];
+    __shared__ int inBoxCircleIndexes[BLOCKSIZE];
 
     int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
     int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
 
     int imageWidth = cuConstRendererParams.imageWidth;
     int imageHeight = cuConstRendererParams.imageHeight;
-
-    float invWidth = 1.f / imageWidth;
-    float invHeight = 1.f / imageHeight;
 
     if (pixelX >= imageWidth || pixelY >= imageHeight) 
     {
@@ -684,21 +686,16 @@ void kernelRenderPixels()
     int boxB = blockIdx.y * blockDim.y;
     int boxT = (min(blockIdx.y * blockDim.y + blockDim.y, imageHeight));
 
-    float boxLInv = boxL * invWidth;
-    float boxRInv = boxR * invWidth;
-    float boxTInv = boxT * invHeight;
-    float boxBInv = boxB * invHeight;
-    // if (pixelX == DebugPixelX && pixelY == DebugPixelY)
-    // {
-    //     printf("box[%d %d %d %d], pixelX %d, pixelY %d\n", boxL, boxR, boxT, boxB, pixelX, pixelY);
-    //     printf("boxInv[%f %f %f %f], pixelX %d, pixelY %d\n", boxLInv, boxRInv, boxTInv, boxBInv, pixelX, pixelY);
-    // }
+    float boxLInv = boxL * cuConstRendererParams.invWidth;
+    float boxRInv = boxR * cuConstRendererParams.invWidth;
+    float boxTInv = boxT * cuConstRendererParams.invHeight;
+    float boxBInv = boxB * cuConstRendererParams.invHeight;
 
    
     int linearThreadIndex =  threadIdx.y * blockDim.x + threadIdx.x;
 
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                        invHeight * (static_cast<float>(pixelY) + 0.5f));
+    float2 pixelCenterNorm = make_float2(cuConstRendererParams.invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                        cuConstRendererParams.invHeight * (static_cast<float>(pixelY) + 0.5f));
     for (int batchStartIndexForCircles = 0; 
          batchStartIndexForCircles < cuConstRendererParams.numCircles;
          batchStartIndexForCircles += BLOCKSIZE)
@@ -716,42 +713,26 @@ void kernelRenderPixels()
             isBoxInCircle[linearThreadIndex] = circleInBoxConservative(circleX, circley, 
                                                            circleRadius, boxLInv, boxRInv, boxTInv, boxBInv) ? circleInBox(circleX, circley, 
                                                            circleRadius, boxLInv, boxRInv, boxTInv, boxBInv) : 0;
-            // if (boxL == 384 && boxR == 400 && boxT == 192 && boxB == 208)
-            // {
-
-                // printf("blockidx %d, blockidy %d, lineatTHeadIndex: %d, indexForCircles %d,"
-                //        " radius %f, circleX %f, circleY %f boxINV[%f %f %f %f] "
-                //         " isBoxIncircle result %d: \n", 
-                //         blockIdx.x, blockIdx.y, linearThreadIndex, indexForCircles, 
-                //         circleRadius, circleX, circley, boxLInv, boxRInv, boxTInv, boxBInv,
-                //         isBoxInCircle[linearThreadIndex]);
-            // }
         }
         __syncthreads();
 
-        // if (pixelX == DebugPixelX && pixelY == DebugPixelY)
-        // {
-        //     printf("blockidx %d, blockidy %d, lineatTHeadIndex: %d, isBoxIncircle result : \n", blockIdx.x, blockIdx.y, linearThreadIndex);
-        //     for (int i = 0; i < BLOCKSIZE; ++i)
-        //     {
-        //         printf("%d ", isBoxInCircle[i]);
-        //     }
-        //     printf("\n");
-        // }
+        sharedMemExclusiveScan(linearThreadIndex, isBoxInCircle, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
 
-        // sharedMemExclusiveScan(linearThreadIndex, prefixSumInput, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
-        // __syncthreads();
+        if (isBoxInCircle[linearThreadIndex]) {
+            inBoxCircleIndexes[prefixSumOutput[linearThreadIndex]] = indexForCircles;
+        }
 
-        for (int i = batchStartIndexForCircles; i< batchStartIndexForCircles + BLOCKSIZE; ++i)
+        __syncthreads();
+
+        int numOfIntescetedCircles = prefixSumOutput[BLOCKSIZE - 1] + isBoxInCircle[BLOCKSIZE - 1];
+        
+        // for (int i = batchStartIndexForCircles; i< batchStartIndexForCircles + BLOCKSIZE; ++i)
+        for (int i = 0; i < numOfIntescetedCircles; ++i)
         {
-            if (isBoxInCircle[i % BLOCKSIZE])
-            {
-                float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
-                float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3 * i]);
-                shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
-            }
+            float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+            float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3 * inBoxCircleIndexes[i]]);
+            shadePixel(inBoxCircleIndexes[i], pixelCenterNorm, circlePosition, imgPtr);
         }
-        __syncthreads();
     }
 
 }
