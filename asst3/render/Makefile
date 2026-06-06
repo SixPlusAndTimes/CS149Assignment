@@ -21,7 +21,7 @@ else
 endif
 
 OBJDIR=objs
-CXXFLAGS=-O3 -Wall -g
+CXXFLAGS=-O3 -Wall
 HOSTNAME=$(shell hostname)
 
 LIBS       :=
