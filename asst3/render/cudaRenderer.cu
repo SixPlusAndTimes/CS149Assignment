@@ -660,8 +660,6 @@ CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
-#define DebugPixelX 389
-#define DebugPixelY 205
 __global__ 
 void kernelRenderPixels()
 {
@@ -696,26 +694,24 @@ void kernelRenderPixels()
 
     float2 pixelCenterNorm = make_float2(cuConstRendererParams.invWidth * (static_cast<float>(pixelX) + 0.5f),
                                         cuConstRendererParams.invHeight * (static_cast<float>(pixelY) + 0.5f));
+    isBoxInCircle[linearThreadIndex] = 0;
+    inBoxCircleIndexes[linearThreadIndex] = -1;
     for (int batchStartIndexForCircles = 0; 
          batchStartIndexForCircles < cuConstRendererParams.numCircles;
          batchStartIndexForCircles += BLOCKSIZE)
     {
         int indexForCircles = batchStartIndexForCircles + linearThreadIndex;
-        if (indexForCircles >= cuConstRendererParams.numCircles)
-        {
-            isBoxInCircle[linearThreadIndex] = 0;
-        }
-        else 
+        if (indexForCircles < cuConstRendererParams.numCircles)
         {
             float circleX = cuConstRendererParams.position[3 * indexForCircles];
             float circley = cuConstRendererParams.position[3 * indexForCircles + 1];
             float circleRadius = cuConstRendererParams.radius[indexForCircles];
-            isBoxInCircle[linearThreadIndex] = circleInBoxConservative(circleX, circley, 
-                                                           circleRadius, boxLInv, boxRInv, boxTInv, boxBInv) ? circleInBox(circleX, circley, 
-                                                           circleRadius, boxLInv, boxRInv, boxTInv, boxBInv) : 0;
+            isBoxInCircle[linearThreadIndex] =  circleInBox(circleX, circley, circleRadius, boxLInv, boxRInv, boxTInv, boxBInv);
         }
         __syncthreads();
 
+        // shoudl use sharedMemExclusiveScan to improve permance
+        // but why the performance is ** far far** better than the one that do not do the execlusive scan improvement?
         sharedMemExclusiveScan(linearThreadIndex, isBoxInCircle, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
 
         if (isBoxInCircle[linearThreadIndex]) {
@@ -725,8 +721,6 @@ void kernelRenderPixels()
         __syncthreads();
 
         int numOfIntescetedCircles = prefixSumOutput[BLOCKSIZE - 1] + isBoxInCircle[BLOCKSIZE - 1];
-        
-        // for (int i = batchStartIndexForCircles; i< batchStartIndexForCircles + BLOCKSIZE; ++i)
         for (int i = 0; i < numOfIntescetedCircles; ++i)
         {
             float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
