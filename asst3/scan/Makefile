@@ -21,10 +21,10 @@ else
 endif
 
 OBJDIR=objs
-CXXFLAGS=-O3 -Wall -g
+CXXFLAGS=-O3 -Wall 
 LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart
 NVCC=nvcc
-NVCCFLAGS=-O3 -m64 -ccbin g++-12 -g -G -lineinfo
+NVCCFLAGS=-O3 -m64 -ccbin g++-12
 # NVCCFLAGS=-O3 -m64
 
 
