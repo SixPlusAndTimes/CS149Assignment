@@ -107,8 +107,8 @@ void exclusive_scan(int* input, int roundedLength, int* result)
         {
             upsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
         }
-        CHECK_KERNEL();
-        // cudaDeviceSynchronize(); 
+        // CHECK_KERNEL();
+        cudaDeviceSynchronize(); 
 
         // cudaMemcpy(temp, input, roundedLength * sizeof(int), cudaMemcpyDeviceToHost);
         // printf("upsweep phase, two_d %d two_dplus1 %d, num_threads %d blocks %d\n", two_d, two_dplus1, num_threads, blocks);
@@ -133,8 +133,8 @@ void exclusive_scan(int* input, int roundedLength, int* result)
         {
             downsweep_kernel<<<blocks, THREADS_PER_BLOCK>>>(roundedLength, input, 2 * two_d);
         }
-        CHECK_KERNEL();
-        // cudaDeviceSynchronize(); 
+        // CHECK_KERNEL();
+        cudaDeviceSynchronize(); 
 
         // cudaMemcpy(temp, input, roundedLength * sizeof(int), cudaMemcpyDeviceToHost);
         // printf("downsweep phase, two_d %d, two_dplus1 %d, numthread %d, blocks %d\n", two_d, two_dplus1, thread_num, blocks);
@@ -291,7 +291,8 @@ int find_repeats(int* device_input, int length, int* device_output) {
     {
         fill_repeat_flags<<<blocks, THREADS_PER_BLOCK>>>(device_input, flags);
     }
-    CHECK_KERNEL();
+    // CHECK_KERNEL();
+    cudaDeviceSynchronize();
     cudaMemset(flags + rounded_length - 1, 0, sizeof(int));
 
     {

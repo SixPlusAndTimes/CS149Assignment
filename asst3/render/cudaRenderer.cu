@@ -701,13 +701,11 @@ void kernelRenderPixels()
          batchStartIndexForCircles += BLOCKSIZE)
     {
         int indexForCircles = batchStartIndexForCircles + linearThreadIndex;
-        if (indexForCircles < cuConstRendererParams.numCircles)
-        {
-            float circleX = cuConstRendererParams.position[3 * indexForCircles];
-            float circley = cuConstRendererParams.position[3 * indexForCircles + 1];
-            float circleRadius = cuConstRendererParams.radius[indexForCircles];
-            isBoxInCircle[linearThreadIndex] =  circleInBox(circleX, circley, circleRadius, boxLInv, boxRInv, boxTInv, boxBInv);
-        }
+
+        float circleX = cuConstRendererParams.position[3 * indexForCircles];
+        float circley = cuConstRendererParams.position[3 * indexForCircles + 1];
+        float circleRadius = cuConstRendererParams.radius[indexForCircles];
+        isBoxInCircle[linearThreadIndex] =  circleInBox(circleX, circley, circleRadius, boxLInv, boxRInv, boxTInv, boxBInv);
         __syncthreads();
 
         // shoudl use sharedMemExclusiveScan to improve permance
