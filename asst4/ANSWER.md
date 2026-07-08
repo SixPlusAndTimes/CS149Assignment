@@ -79,6 +79,7 @@
 
 test result is following: 
 ~~~md
+blocks : 64
 Running Part 2 Test: Unfused Attention with Blocked Matmul
 
 -----RUNNING REFERENCE IMPLEMENTATION-----
@@ -134,5 +135,210 @@ Self CPU time total: 220.729ms
 
 STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
 cpu time:  220.665ms
+mem usage:  4718592 bytes
+
+blocksize 16:
+STAGE:2026-07-08 23:28:06 57685:57685 ActivityProfilerController.cpp:312] Completed Stage: Warm Up
+STAGE:2026-07-08 23:28:06 57685:57685 ActivityProfilerController.cpp:318] Completed Stage: Collection
+STAGE:2026-07-08 23:28:06 57685:57685 ActivityProfilerController.cpp:322] Completed Stage: Post Processing
+manual attention == pytorch attention True
+Manual Execution Time:  0.19634008407592773 
+
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                   aten::empty         0.03%      64.000us         0.03%      64.000us      21.333us       5.00 Mb       5.00 Mb             3  
+    STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX        99.27%     194.943ms        99.96%     196.303ms     196.303ms       4.50 Mb      -1.00 Mb             1  
+                                   aten::zeros         0.02%      32.000us         0.33%     647.000us     323.500us       4.50 Mb           0 b             2  
+                                   aten::clone         0.05%      90.000us         0.28%     545.000us     272.500us       1.00 Mb           0 b             2  
+                               model_inference         0.04%      75.000us       100.00%     196.378ms     196.378ms     512.00 Kb      -4.00 Mb             1  
+                                 aten::flatten         0.04%      87.000us         0.24%     470.000us      94.000us     512.00 Kb           0 b             5  
+                              aten::empty_like         0.01%      20.000us         0.02%      32.000us      32.000us     512.00 Kb           0 b             1  
+                           aten::empty_strided         0.01%      11.000us         0.01%      11.000us      11.000us     512.00 Kb     512.00 Kb             1  
+                                   aten::zero_         0.01%      22.000us         0.29%     563.000us     281.500us           0 b           0 b             2  
+                                   aten::fill_         0.28%     541.000us         0.28%     541.000us     270.500us           0 b           0 b             2  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 196.378ms
+
+STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  196.303ms
+mem usage:  4718592 bytes
+
+blocksize 8 :
+-----RUNNING STUDENT IMPLEMENTATION-----
+
+STAGE:2026-07-08 23:30:38 58912:58912 ActivityProfilerController.cpp:312] Completed Stage: Warm Up
+STAGE:2026-07-08 23:30:38 58912:58912 ActivityProfilerController.cpp:318] Completed Stage: Collection
+STAGE:2026-07-08 23:30:38 58912:58912 ActivityProfilerController.cpp:322] Completed Stage: Post Processing
+manual attention == pytorch attention True
+Manual Execution Time:  0.1853632926940918 
+
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                   aten::empty         0.03%      47.000us         0.03%      47.000us      15.667us       5.00 Mb       5.00 Mb             3  
+    STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX        99.41%     184.302ms        99.97%     185.333ms     185.333ms       4.50 Mb      -1.00 Mb             1  
+                                   aten::zeros         0.01%      26.000us         0.33%     620.000us     310.000us       4.50 Mb           0 b             2  
+                                   aten::clone         0.02%      38.000us         0.19%     345.000us     172.500us       1.00 Mb           0 b             2  
+                               model_inference         0.03%      63.000us       100.00%     185.396ms     185.396ms     512.00 Kb      -4.00 Mb             1  
+                                 aten::flatten         0.02%      37.000us         0.10%     177.000us      35.400us     512.00 Kb           0 b             5  
+                              aten::empty_like         0.00%       9.000us         0.01%      13.000us      13.000us     512.00 Kb           0 b             1  
+                           aten::empty_strided         0.01%      11.000us         0.01%      11.000us      11.000us     512.00 Kb     512.00 Kb             1  
+                                   aten::zero_         0.01%      21.000us         0.30%     551.000us     275.500us           0 b           0 b             2  
+                                   aten::fill_         0.29%     530.000us         0.29%     530.000us     265.000us           0 b           0 b             2  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 185.396ms
+
+STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  185.333ms
+mem usage:  4718592 bytes
+~~~
+
+
+delete the if branch:
+
+~~~c++
+
+    for (int b = 0; b < B; ++b)
+    {
+        for (int h = 0; h < H; ++h)
+        {
+            for (int i_block = 0; i_block < N; i_block += BLOCK_SIZE)
+            {
+                for (int j_block = 0; j_block < N; j_block += BLOCK_SIZE)
+                {
+                    for (int k_block = 0; k_block < d; k_block += BLOCK_SIZE)
+                    {
+
+                        int i_limit = std::min(N - i_block, BLOCK_SIZE);
+                        int j_limit = std::min(N - j_block, BLOCK_SIZE);
+                        int k_limit = std::min(d - k_block, BLOCK_SIZE);
+                        for (int i = 0; i < i_limit; ++i)
+                        {
+                            for (int j = 0; j < j_limit; ++j)
+                            {
+                                float block_sum = 0.f;
+                                for (int k = 0; k < k_limit; ++k)
+                                {
+                                    block_sum += fourDimRead(Q, b, h, i + i_block, k + k_block, H, N, d) * fourDimRead(K, b, h, j + j_block, k + k_block, H, N, d);
+                                }
+                                float origin = twoDimRead(QK_t, i + i_block, j + j_block, N);
+                                twoDimWrite(QK_t, i + i_block, j + j_block, N, block_sum + origin);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (int i = 0; i < N; ++i) 
+            {
+                float sum = 0.0;
+                for (int j = 0; j < N; ++j) 
+                {
+                    sum += std::exp(twoDimRead(QK_t, i, j, N));
+                }
+
+                for (int j = 0; j < N; ++j) 
+                {
+                    float val = std::exp(twoDimRead(QK_t, i, j, N)) / sum;
+                    twoDimWrite(QK_t, i, j, N, val);
+                }
+            }
+
+            for (int i_block = 0; i_block < N; i_block += BLOCK_SIZE)
+            {
+                for (int j_block = 0; j_block < d; j_block += BLOCK_SIZE)
+                {
+                    for (int k_block = 0; k_block < N; k_block += BLOCK_SIZE)
+                    {
+
+                        int i_limit = std::min(N - i_block, BLOCK_SIZE);
+                        int j_limit = std::min(d - j_block, BLOCK_SIZE);
+                        int k_limit = std::min(N - k_block, BLOCK_SIZE);
+                        for (int i = 0; i < i_limit; ++i)
+                        {
+                            // if (i + i_block >= N) break;
+                            for (int j = 0; j < j_limit; ++j)
+                            {
+                                // if (j + j_block >= d) break;
+                                float block_sum = 0.f;
+                                for (int k = 0; k < k_limit; ++k)
+                                {
+                                    // if (k + k_block >= N) break;
+                                    block_sum += twoDimRead(QK_t, i + i_block, k + k_block, N) * fourDimRead(V, b, h, k + k_block, j + j_block, H, N, d);
+                                }
+                                float origin = fourDimRead(O, b, h, i + i_block, j + j_block, H, N, d);
+                                fourDimWrite(O, b, h, i + i_block, j + j_block, H, N, d, block_sum  + origin);
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+    }
+
+~~~
+
+result: 
+~~~md
+Compiling code into a PyTorch module...
+
+
+Running Part 2 Test: Unfused Attention with Blocked Matmul
+
+-----RUNNING REFERENCE IMPLEMENTATION-----
+
+STAGE:2026-07-08 23:52:28 67889:67889 ActivityProfilerController.cpp:312] Completed Stage: Warm Up
+STAGE:2026-07-08 23:52:28 67889:67889 ActivityProfilerController.cpp:318] Completed Stage: Collection
+STAGE:2026-07-08 23:52:28 67889:67889 ActivityProfilerController.cpp:322] Completed Stage: Post Processing
+manual attention == pytorch attention True
+Manual Execution Time:  0.1644890308380127 
+
+------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                            Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                     aten::empty         0.06%      93.000us         0.06%      93.000us      31.000us       5.00 Mb       5.00 Mb             3  
+    REFERENCE - BLOCKED MATMUL + UNFUSED SOFTMAX        99.06%     162.984ms        99.96%     164.460ms     164.460ms       4.50 Mb      -1.00 Mb             1  
+                                     aten::zeros         0.03%      48.000us         0.57%     935.000us     467.500us       4.50 Mb           0 b             2  
+                                     aten::clone         0.04%      59.000us         0.28%     461.000us     230.500us       1.00 Mb           0 b             2  
+                                 model_inference         0.04%      67.000us       100.00%     164.527ms     164.527ms     512.00 Kb      -4.00 Mb             1  
+                                   aten::flatten         0.04%      61.000us         0.15%     240.000us      48.000us     512.00 Kb           0 b             5  
+                                aten::empty_like         0.00%       8.000us         0.01%      16.000us      16.000us     512.00 Kb           0 b             1  
+                             aten::empty_strided         0.03%      55.000us         0.03%      55.000us      55.000us     512.00 Kb     512.00 Kb             1  
+                                     aten::zero_         0.03%      56.000us         0.49%     802.000us     401.000us           0 b           0 b             2  
+                                     aten::fill_         0.45%     746.000us         0.45%     746.000us     373.000us           0 b           0 b             2  
+------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 164.527ms
+
+REFERENCE - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  164.46ms
+mem usage:  4718592 bytes
+-----RUNNING STUDENT IMPLEMENTATION-----
+
+STAGE:2026-07-08 23:52:34 67889:67889 ActivityProfilerController.cpp:312] Completed Stage: Warm Up
+STAGE:2026-07-08 23:52:34 67889:67889 ActivityProfilerController.cpp:318] Completed Stage: Collection
+STAGE:2026-07-08 23:52:34 67889:67889 ActivityProfilerController.cpp:322] Completed Stage: Post Processing
+manual attention == pytorch attention True
+Manual Execution Time:  0.13139843940734863 
+
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                   aten::empty         0.03%      37.000us         0.03%      37.000us      12.333us       5.00 Mb       5.00 Mb             3  
+    STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX        99.38%     130.606ms        99.96%     131.369ms     131.369ms       4.50 Mb      -1.00 Mb             1  
+                                   aten::zeros         0.01%      19.000us         0.30%     396.000us     198.000us       4.50 Mb           0 b             2  
+                                   aten::clone         0.03%      39.000us         0.25%     331.000us     165.500us       1.00 Mb           0 b             2  
+                               model_inference         0.04%      58.000us       100.00%     131.427ms     131.427ms     512.00 Kb      -4.00 Mb             1  
+                                 aten::flatten         0.02%      23.000us         0.11%     148.000us      29.600us     512.00 Kb           0 b             5  
+                              aten::empty_like         0.01%       7.000us         0.01%       9.000us       9.000us     512.00 Kb           0 b             1  
+                           aten::empty_strided         0.01%      15.000us         0.01%      15.000us      15.000us     512.00 Kb     512.00 Kb             1  
+                                   aten::zero_         0.01%      12.000us         0.26%     342.000us     171.000us           0 b           0 b             2  
+                                   aten::fill_         0.25%     330.000us         0.25%     330.000us     165.000us           0 b           0 b             2  
+----------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 131.427ms
+
+STUDENT - BLOCKED MATMUL + UNFUSED SOFTMAX statistics
+cpu time:  131.369ms
 mem usage:  4718592 bytes
 ~~~

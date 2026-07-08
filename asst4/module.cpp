@@ -176,7 +176,7 @@ torch::Tensor myNaiveAttention(torch::Tensor QTensor, torch::Tensor KTensor, tor
 }
 
 
-#define BLOCK_SIZE 64
+#define BLOCK_SIZE 16
 //  my env : cat /sys/devices/system/cpu/cpu1/cache/index0/coherency_line_size 64
 // ---------------------------------------------------------- //
 //     PART 2: BLOCKED MATRIX MULTIPLY AND UNFUSED SOFTMAX    //
@@ -211,17 +211,16 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor, torch::Tensor KTe
                 {
                     for (int k_block = 0; k_block < d; k_block += BLOCK_SIZE)
                     {
-
-                        for (int i = 0; i < BLOCK_SIZE; ++i)
+                        int i_limit = std::min(N - i_block, BLOCK_SIZE);
+                        int j_limit = std::min(N - j_block, BLOCK_SIZE);
+                        int k_limit = std::min(d - k_block, BLOCK_SIZE);
+                        for (int i = 0; i < i_limit; ++i)
                         {
-                            if (i + i_block >= N) break;
-                            for (int j = 0; j < BLOCK_SIZE; ++j)
+                            for (int j = 0; j < j_limit; ++j)
                             {
-                                if (j + j_block >= N) break;
                                 float block_sum = 0.f;
-                                for (int k = 0; k < BLOCK_SIZE; ++k)
+                                for (int k = 0; k < k_limit; ++k)
                                 {
-                                    if (k + k_block >= d) break;
                                     block_sum += fourDimRead(Q, b, h, i + i_block, k + k_block, H, N, d) * fourDimRead(K, b, h, j + j_block, k + k_block, H, N, d);
                                 }
                                 float origin = twoDimRead(QK_t, i + i_block, j + j_block, N);
@@ -254,38 +253,26 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor, torch::Tensor KTe
                     for (int k_block = 0; k_block < N; k_block += BLOCK_SIZE)
                     {
 
-                        for (int i = 0; i < BLOCK_SIZE; ++i)
+                        int i_limit = std::min(N - i_block, BLOCK_SIZE);
+                        int j_limit = std::min(d - j_block, BLOCK_SIZE);
+                        int k_limit = std::min(N - k_block, BLOCK_SIZE);
+                        for (int i = 0; i < i_limit; ++i)
                         {
-                            if (i + i_block >= N) break;
-                            for (int j = 0; j < BLOCK_SIZE; ++j)
+                            for (int j = 0; j < j_limit; ++j)
                             {
-                                if (j + j_block >= d) break;
                                 float block_sum = 0.f;
-                                for (int k = 0; k < BLOCK_SIZE; ++k)
+                                for (int k = 0; k < k_limit; ++k)
                                 {
-                                    if (k + k_block >= N) break;
                                     block_sum += twoDimRead(QK_t, i + i_block, k + k_block, N) * fourDimRead(V, b, h, k + k_block, j + j_block, H, N, d);
                                 }
                                 float origin = fourDimRead(O, b, h, i + i_block, j + j_block, H, N, d);
-                                fourDimWrite(O, b, h, i + i_block, j + j_block, H, N, d, block_sum + origin);
+                                fourDimWrite(O, b, h, i + i_block, j + j_block, H, N, d, block_sum  + origin);
                             }
                         }
                     }
                 }
             }
 
-            // for (int i = 0; i < N; i++) 
-            // {
-            //     for (int j = 0; j < d; j++) 
-            //     {
-            //         float sum = 0.0;
-            //         for (int k = 0; k < N; k++) 
-            //         {
-            //             sum += twoDimRead(QK_t, i, k, N) * fourDimRead(V, b, h, k, j, H, N, d);
-            //         }
-            //         fourDimWrite(O, b, h, i, j, H, N, d, sum);
-            //     }
-            // }
         }
     }
 
