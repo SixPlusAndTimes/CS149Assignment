@@ -200,7 +200,6 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor, torch::Tensor KTe
     //Format QK_t Tensor into a 2D vector.
     std::vector<float> QK_t = formatTensor(QK_tTensor);
 
-    // -------- YOUR CODE HERE  -------- //
     for (int b = 0; b < B; ++b)
     {
         for (int h = 0; h < H; ++h)
@@ -267,6 +266,7 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor, torch::Tensor KTe
                                 }
                                 float origin = fourDimRead(O, b, h, i + i_block, j + j_block, H, N, d);
                                 fourDimWrite(O, b, h, i + i_block, j + j_block, H, N, d, block_sum  + origin);
+    // -------- YOUR CODE HERE  -------- //
                             }
                         }
                     }
@@ -310,18 +310,50 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor, tor
     // -------- YOUR CODE HERE  -------- //
     // We give you a template of the first three loops for your convenience
     //loop over batch
-    for (int b = 0; b < B; b++){
-
-        //loop over heads
-        for (int h = 0; h < H; h++){
-            for (int i = 0; i < N ; i++){
-
-		// YRow is moved inside so each OpenMP thread gets a local copy.
-                at::Tensor ORowTensor = temp.index({torch::indexing::Slice(omp_get_thread_num(), torch::indexing::None)});      
+    #pragma omp parallel for collapse(3)
+    for (int b = 0; b < B; ++b)
+    {
+        for (int h = 0; h < H; ++h)
+        {
+            for (int i = 0; i < N; ++i)
+            {
+                // YRow is moved inside so each OpenMP thread gets a local copy.
+                at::Tensor ORowTensor = temp.index({torch::indexing::Slice(
+                    omp_get_thread_num(), torch::indexing::None)});
                 std::vector<float> ORow = formatTensor(ORowTensor);
-		//YOUR CODE HERE
+
+                for (int j = 0; j < N; ++j)
+                {
+                    float sum = 0.0f;
+                    for (int k = 0; k < d; ++k)
+                    {
+                        sum += fourDimRead(Q, b, h, i, k, H, N, d) * fourDimRead(K, b, h, j, k, H, N, d);
+                    }
+                    ORow[j] = sum;
+                }
+
+                float sum = 0.0;
+                for (int j = 0; j < N; ++j) 
+                {
+                    ORow[j] = std::exp(ORow[j]);
+                    sum += ORow[j];
+                }
+                for (int j = 0; j < N; ++j) 
+                {
+                    ORow[j] /= sum;
+                }
+
+                for (int j = 0; j < d; ++j) 
+                {
+                    float sum = 0.0;
+                    for (int k = 0; k < N; ++k) 
+                    {
+                        sum += ORow[k] * fourDimRead(V, b, h, k, j, H, N, d);
+                    }
+                    fourDimWrite(O, b, h, i, j, H, N, d, sum);
+                }
             }
-	}
+        }
     }
 	    
 	
